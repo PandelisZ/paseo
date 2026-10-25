@@ -12,14 +12,54 @@ For the concept and how Paseo manages providers, see [Providers](/docs/providers
 
 ## Native support
 
-Work out of the box once the underlying CLI is installed and authenticated.
+Use these providers with an installed, authenticated CLI. Some require the setup below.
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Anthropic's coding agent with MCP support, streaming, and deep reasoning.
 - [Codex](/docs/codex). OpenAI's workspace agent with sandbox controls and optional network access.
 - [OpenCode](https://opencode.ai/). Open-source coding assistant with multi-provider model support.
 - [Pi](https://pi.dev). Minimal terminal-based coding agent with multi-provider LLM support.
+- [Roder](#roder). Local coding agent through a bundled ACP provider plugin.
 - [Antigravity](#antigravity). Uses your installed `agy` CLI through a built-in provider plugin.
 - [Muse Code](/docs/muse-code). Meta's terminal coding agent, bundled as a provider plugin.
+
+### Roder
+
+Install [Roder](https://github.com/RoderAI/roder#install-roder) on your daemon host.
+For Codex OAuth, run `roder auth login codex` in a terminal on that host. Roder reads
+its own credentials; Paseo does not sign in for you.
+
+Enable the bundled provider in `~/.paseo/config.json`:
+
+```json
+{
+  "agents": {
+    "providers": {
+      "roder": {
+        "enabled": true,
+        "command": ["roder", "acp"],
+        "env": { "RODER_PROVIDER": "codex", "RODER_MODEL": "gpt-6-sol" },
+        "paseoTools": { "enabled": false }
+      }
+    }
+  }
+}
+```
+
+Run `paseo reload`, then choose **Roder** when starting an agent. If `roder` is
+outside the daemon's PATH, use its absolute path in `command` and keep `acp` as
+the second argument. You can select another provider and model through Roder's
+configuration or these environment overrides.
+
+Keep `paseoTools.enabled` set to `false` and leave the agent's MCP server list empty.
+Roder's ACP endpoint rejects injected MCP servers. Paseo's tools, including agent
+orchestration and voice tools, are unavailable in Roder sessions.
+
+Roder currently exposes text prompts, streamed responses, tool activity, cancellation,
+and permission requests over ACP. Its ACP endpoint does not expose model or mode
+selectors, image prompts, saved-session listing, or session restoration. Set the model
+before starting a session. After the provider process closes, start a new session;
+Paseo cannot resume the Roder conversation. Paseo system-prompt metadata is not applied
+by Roder's ACP endpoint; put agent instructions in the workspace's `AGENTS.md`.
 
 ### Antigravity
 
