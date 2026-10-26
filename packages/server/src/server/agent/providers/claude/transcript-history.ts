@@ -166,8 +166,14 @@ export async function withClaudeReplayHistory<T>(
   try {
     return await consume(await indexHistory(historyPath, descriptors));
   } finally {
-    for (const fd of descriptors.values()) await fd.close();
+    await closeReplaySources(descriptors.values());
   }
+}
+
+async function closeReplaySources(descriptors: Iterable<FileHandle>): Promise<void> {
+  const results = await Promise.allSettled([...descriptors].map((fd) => fd.close()));
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure) throw failure.reason;
 }
 
 async function indexHistory(

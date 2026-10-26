@@ -2332,6 +2332,7 @@ class ClaudeAgentSession implements AgentSession {
     { type: "provider_subagent" }
   >[] = [];
   private historyPending = false;
+  // Readiness never rejects; history/rebind failures are logged at their owning boundary.
   private historyReady: Promise<void> | null = null;
   private historySessionId: string | null = null;
   private replayingHistory = false;
@@ -3284,7 +3285,9 @@ class ClaudeAgentSession implements AgentSession {
           },
         ]);
       }
-    })();
+    })().catch((error) => {
+      this.logger.warn({ err: error, sessionId }, "Failed to rebind Claude session");
+    });
     return this.historyReady;
   }
 

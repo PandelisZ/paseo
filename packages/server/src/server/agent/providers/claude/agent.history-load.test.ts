@@ -54,10 +54,10 @@ describe("ClaudeAgentSession persisted history load", () => {
     return client.resumeSession({ provider: "claude", sessionId: SESSION_ID }, { cwd });
   }
 
-  function replyFactory(text: string): ClaudeQueryFactory {
+  function replyFactory(text: string, messageId = "live-reply"): ClaudeQueryFactory {
     return (() => {
       const messages = [
-        { type: "assistant", uuid: "live-reply", message: { content: text } },
+        { type: "assistant", uuid: messageId, message: { content: text } },
         { type: "result", subtype: "success", total_cost_usd: 0 },
       ];
       return {
@@ -297,6 +297,74 @@ describe("ClaudeAgentSession persisted history load", () => {
       ]);
     } finally {
       releaseRetirement();
+      await session.close();
+    }
+  });
+
+  test("keeps history and live turns available after query retirement fails during rebind", async () => {
+    mkdirSync(path.dirname(transcriptPath()), { recursive: true });
+    writeFileSync(
+      transcriptPath(),
+      [
+        { type: "user", uuid: "u1", message: { content: "first" } },
+        { type: "assistant", uuid: "a1", message: { content: "reply" } },
+        { type: "user", uuid: "u2", message: { content: "second" } },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n"),
+    );
+    let firstQuery = true;
+    let finishRead: ((value: unknown) => void) | undefined;
+    const queryFactory = ((input) => {
+      const query = replyFactory(
+        firstQuery ? "before retirement" : "still available",
+        firstQuery ? "before-retirement" : "live-reply",
+      )(input);
+      if (!firstQuery) return query;
+      firstQuery = false;
+      let reads = 0;
+      return {
+        ...query,
+        async next() {
+          if (++reads <= 2) return query.next();
+          return new Promise((resolve) => {
+            finishRead = resolve;
+          });
+        },
+        close() {
+          finishRead?.({ done: true, value: undefined });
+          throw new Error("retirement failed");
+        },
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+      };
+    }) as ClaudeQueryFactory;
+    const session = await resume(queryFactory, {
+      async forkSession() {
+        return { sessionId: "failed-rebind" };
+      },
+    });
+    try {
+      await Array.fromAsync(session.streamHistory());
+      await collectSessionTurnEvents(session, "before rewind");
+      await expect(session.revertConversation!({ messageId: "u2" })).resolves.toBeUndefined();
+      expect(records).toContainEqual(
+        expect.objectContaining({
+          level: pino.levels.values.warn,
+          msg: "Failed to rebind Claude session",
+          sessionId: "failed-rebind",
+          err: expect.objectContaining({ message: "retirement failed" }),
+        }),
+      );
+      expect(await Array.fromAsync(session.streamHistory())).toEqual([]);
+      const live = await collectSessionTurnEvents(session, "after failed rebind");
+      expect(
+        live
+          .filter((event) => event.type === "timeline" && event.item.type === "assistant_message")
+          .map((event) => (event.type === "timeline" ? event.item : null)),
+      ).toEqual([{ type: "assistant_message", messageId: "live-reply", text: "still available" }]);
+    } finally {
       await session.close();
     }
   });
