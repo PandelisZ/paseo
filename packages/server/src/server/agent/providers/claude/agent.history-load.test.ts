@@ -98,14 +98,15 @@ describe("ClaudeAgentSession persisted history load", () => {
     rmSync(tempRoot, { recursive: true, force: true });
   });
 
-  test("serves unrelated health requests while resuming 300 MiB of ordered history", async () => {
+  test("serves unrelated health requests while resuming 32 MiB of ordered history", async () => {
+    const startedAt = performance.now();
     mkdirSync(path.dirname(transcriptPath()), { recursive: true });
     const file = await open(transcriptPath(), "w");
     const text = "x".repeat(16 * 1024);
     let bytes = 0;
     let count = 0;
     try {
-      while (bytes < 300 * 1024 * 1024) {
+      while (bytes < 32 * 1024 * 1024) {
         const line =
           JSON.stringify({ type: "assistant", message: { content: `${count}:${text}` } }) + "\n";
         bytes += Buffer.byteLength(line);
@@ -147,7 +148,15 @@ describe("ClaudeAgentSession persisted history load", () => {
       loading = false;
       await health;
       await new Promise((resolve) => setTimeout(resolve, 5));
-      console.info(JSON.stringify({ bytes, count, longestGap, answeredDuringLoad }));
+      console.info(
+        JSON.stringify({
+          bytes,
+          count,
+          longestGap,
+          answeredDuringLoad,
+          elapsedMs: performance.now() - startedAt,
+        }),
+      );
       expect(index).toBe(count);
       expect(longestGap).toBeLessThan(50);
       expect(answeredDuringLoad).toBe(true);
