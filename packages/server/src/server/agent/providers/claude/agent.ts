@@ -2546,7 +2546,11 @@ class ClaudeAgentSession implements AgentSession {
       this.input.push(sdkMessage);
       setTimeout(() => {
         if (this.activeForegroundTurnId === turnId) {
-          this.emitSubmittedUserMessage(sdkMessage, turnId, options?.clientMessageId);
+          void this.emitSubmittedUserMessage(sdkMessage, turnId, options?.clientMessageId).catch(
+            (error: unknown) => {
+              this.logger.warn({ err: error }, "Failed to emit submitted Claude message");
+            },
+          );
         }
       }, 0);
     } catch (error) {
@@ -4133,7 +4137,7 @@ class ClaudeAgentSession implements AgentSession {
         consecutiveInterruptAbortRecoveries = 0;
         if (await this.handleMissingResumedConversation(message, activeQuery)) return true;
         if (!this.ownsQuery(activeQuery)) return true;
-        this.routeSdkMessageFromPump(message);
+        await this.routeSdkMessageFromPump(message);
         return false;
       } finally {
         this.processingSdkMessages--;
@@ -4257,7 +4261,7 @@ class ClaudeAgentSession implements AgentSession {
     return !this.closed && this.query === query;
   }
 
-  private routeSdkMessageFromPump(message: SDKMessage): void {
+  private async routeSdkMessageFromPump(message: SDKMessage): Promise<void> {
     if (this.consumeSessionStateChange(message)) {
       return;
     }
@@ -4291,7 +4295,7 @@ class ClaudeAgentSession implements AgentSession {
       "provider.claude.parsed_event",
     );
 
-    const events = this.buildPumpedMessageEvents(message, identifiers.messageId, turnId);
+    const events = await this.buildPumpedMessageEvents(message, identifiers.messageId, turnId);
 
     if (events.length === 0) {
       return;
@@ -4326,15 +4330,22 @@ class ClaudeAgentSession implements AgentSession {
     this.dispatchEvents(events);
   }
 
-  private buildPumpedMessageEvents(
+  private async buildPumpedMessageEvents(
     message: SDKMessage,
     messageIdHint: string | null,
     turnId: string | null,
-  ): AgentStreamEvent[] {
-    const messageEvents = this.translateMessageToEvents(message, {
+  ): Promise<AgentStreamEvent[]> {
+    const query = this.query;
+    const messageEvents = await this.translateMessageToEvents(message, {
       suppressAssistantText: true,
       suppressReasoning: true,
     });
+    if (
+      this.closed ||
+      this.query !== query ||
+      (this.activeForegroundTurnId ?? this.autonomousTurn?.id ?? null) !== turnId
+    )
+      return [];
     const assistantTimelineEvents = readClaudeParentToolUseId(message)
       ? []
       : this.timelineAssembler
@@ -4479,13 +4490,13 @@ class ClaudeAgentSession implements AgentSession {
     return withdrewAll;
   }
 
-  private translateMessageToEvents(
+  private async translateMessageToEvents(
     message: SDKMessage,
     options?: {
       suppressAssistantText?: boolean;
       suppressReasoning?: boolean;
     },
-  ): AgentStreamEvent[] {
+  ): Promise<AgentStreamEvent[]> {
     const parentToolUseId = readClaudeParentToolUseId(message);
     if (parentToolUseId) {
       return this.translateSidechainFrameToEvents(message, parentToolUseId);
@@ -4533,11 +4544,11 @@ class ClaudeAgentSession implements AgentSession {
         this.appendSystemMessageEvents(message, events);
         break;
       case "user":
-        this.appendUserMessageEvents(message, events);
+        await this.appendUserMessageEvents(message, events);
         this.appendSidechainResultEvents(message, events);
         break;
       case "assistant": {
-        const timelineItems = this.mapBlocksToTimeline(message.message.content, {
+        const timelineItems = await this.mapBlocksToTimeline(message.message.content, {
           suppressAssistantText: options?.suppressAssistantText ?? false,
           suppressReasoning: options?.suppressReasoning ?? false,
         });
@@ -4548,7 +4559,7 @@ class ClaudeAgentSession implements AgentSession {
         break;
       }
       case "stream_event":
-        this.appendStreamEventEvents(message, events, options);
+        await this.appendStreamEventEvents(message, events, options);
         break;
       case "result":
         this.appendResultEvents(message, events);
@@ -4650,13 +4661,14 @@ class ClaudeAgentSession implements AgentSession {
     }
   }
 
-  private emitSubmittedUserMessage(
+  private async emitSubmittedUserMessage(
     message: Extract<SDKMessage, { type: "user" }>,
     turnId: string,
     clientMessageId?: string,
-  ): void {
+  ): Promise<void> {
     const events: AgentStreamEvent[] = [];
-    this.appendUserMessageEvents(message, events);
+    await this.appendUserMessageEvents(message, events);
+    if (this.activeForegroundTurnId !== turnId) return;
     if (events.length === 0) {
       return;
     }
@@ -4786,10 +4798,10 @@ class ClaudeAgentSession implements AgentSession {
     }
   }
 
-  private appendUserMessageEvents(
+  private async appendUserMessageEvents(
     message: Extract<SDKMessage, { type: "user" }>,
     events: AgentStreamEvent[],
-  ): void {
+  ): Promise<void> {
     if (isSyntheticUserEntry(message)) {
       return;
     }
@@ -4828,7 +4840,7 @@ class ClaudeAgentSession implements AgentSession {
       return;
     }
     if (Array.isArray(content)) {
-      this.appendUserContentArrayEvents(content, messageId, events);
+      await this.appendUserContentArrayEvents(content, messageId, events);
     }
   }
 
@@ -4854,12 +4866,12 @@ class ClaudeAgentSession implements AgentSession {
     events.push({ type: "timeline", item, provider: "claude" });
   }
 
-  private appendUserContentArrayEvents(
+  private async appendUserContentArrayEvents(
     content: ReadonlyArray<unknown>,
     messageId: string | undefined,
     events: AgentStreamEvent[],
-  ): void {
-    const timelineItems = this.mapBlocksToTimeline(content, {
+  ): Promise<void> {
+    const timelineItems = await this.mapBlocksToTimeline(content, {
       textMessageType: "user_message",
     });
     for (const item of timelineItems) {
@@ -4875,16 +4887,16 @@ class ClaudeAgentSession implements AgentSession {
     }
   }
 
-  private appendStreamEventEvents(
+  private async appendStreamEventEvents(
     message: Extract<SDKMessage, { type: "stream_event" }>,
     events: AgentStreamEvent[],
     options: { suppressAssistantText?: boolean; suppressReasoning?: boolean } | undefined,
-  ): void {
+  ): Promise<void> {
     const usageUpdatedEvent = this.contextUsage.buildStreamUsageEvent(message.event);
     if (usageUpdatedEvent) {
       events.push(usageUpdatedEvent);
     }
-    const timelineItems = this.mapPartialEvent(message.event, {
+    const timelineItems = await this.mapPartialEvent(message.event, {
       suppressAssistantText: options?.suppressAssistantText ?? false,
       suppressReasoning: options?.suppressReasoning ?? false,
     });
@@ -5350,7 +5362,7 @@ class ClaudeAgentSession implements AgentSession {
   ): Promise<void> {
     const timeline: PersistedTimelineEntry[] = [];
     for await (const entry of entries) {
-      this.ingestPersistedHistoryEntry(entry, timeline, replay);
+      await this.ingestPersistedHistoryEntry(entry, timeline, replay);
     }
 
     if (timeline.length > 0) {
@@ -5410,11 +5422,11 @@ class ClaudeAgentSession implements AgentSession {
     return replay;
   }
 
-  private ingestPersistedHistoryEntry(
+  private async ingestPersistedHistoryEntry(
     entry: ClaudeHistoryEntry,
     timeline: PersistedTimelineEntry[],
     replay: ClaudeReplayOwnership,
-  ): void {
+  ): Promise<void> {
     if (entry.isSidechain) {
       return;
     }
@@ -5428,7 +5440,7 @@ class ClaudeAgentSession implements AgentSession {
       ? replay.toolOwners.get(notificationToolUseId)
       : undefined;
     if (notificationOwner) {
-      for (const item of this.convertHistoryEntry(entry)) {
+      for (const item of await this.convertHistoryEntry(entry)) {
         this.persistedProviderSubagentEvents.push({
           type: "provider_subagent",
           provider: "claude",
@@ -5445,7 +5457,7 @@ class ClaudeAgentSession implements AgentSession {
     const taskSnapshot = this.taskState.observe(entry);
     const items = [
       ...(taskSnapshot ? [taskSnapshot] : []),
-      ...this.convertHistoryEntry(entry).map((item) =>
+      ...(await this.convertHistoryEntry(entry)).map((item) =>
         labelReplayedSubagentCard(item, replay.subagentToolCalls),
       ),
     ];
@@ -5482,10 +5494,10 @@ class ClaudeAgentSession implements AgentSession {
     });
   }
 
-  private convertHistoryEntry(entry: ClaudeHistoryEntry): AgentTimelineItem[] {
-    return convertClaudeHistoryEntry(entry, (content) => this.mapBlocksToTimeline(content)).map(
-      limitAgentTimelineItemContent,
-    );
+  private async convertHistoryEntry(entry: ClaudeHistoryEntry): Promise<AgentTimelineItem[]> {
+    return (
+      await convertClaudeHistoryEntry(entry, (content) => this.mapBlocksToTimeline(content))
+    ).map(limitAgentTimelineItemContent);
   }
 
   // Maps Claude content blocks into AgentTimelineItems.
@@ -5500,14 +5512,14 @@ class ClaudeAgentSession implements AgentSession {
   //
   // NOTE: convertClaudeHistoryEntry uses extractUserMessageText directly instead of this function
   // for user entries. Both paths must produce equivalent user_message items.
-  private mapBlocksToTimeline(
+  private async mapBlocksToTimeline(
     content: string | ReadonlyArray<unknown>,
     options?: {
       textMessageType?: "assistant_message" | "user_message";
       suppressAssistantText?: boolean;
       suppressReasoning?: boolean;
     },
-  ): AgentTimelineItem[] {
+  ): Promise<AgentTimelineItem[]> {
     const textMessageType = options?.textMessageType ?? "assistant_message";
     const suppressText =
       textMessageType === "assistant_message" && (options?.suppressAssistantText ?? false);
@@ -5534,7 +5546,7 @@ class ClaudeAgentSession implements AgentSession {
       if (!isClaudeContentChunk(block) || this.mapSubagentHandbackBlock(block, items)) {
         continue;
       }
-      this.mapBlockToTimeline(block, {
+      await this.mapBlockToTimeline(block, {
         items,
         userTextParts,
         textMessageType,
@@ -5579,7 +5591,7 @@ class ClaudeAgentSession implements AgentSession {
     }
   }
 
-  private mapBlockToTimeline(
+  private async mapBlockToTimeline(
     block: ClaudeContentChunk,
     context: {
       items: AgentTimelineItem[];
@@ -5588,7 +5600,7 @@ class ClaudeAgentSession implements AgentSession {
       suppressText: boolean;
       suppressReasoning: boolean;
     },
-  ): void {
+  ): Promise<void> {
     switch (block.type) {
       case "text":
       case "text_delta":
@@ -5612,7 +5624,7 @@ class ClaudeAgentSession implements AgentSession {
       case "code_execution_tool_result":
       case "bash_code_execution_tool_result":
       case "text_editor_code_execution_tool_result":
-        this.handleToolResult(block, context.items);
+        await this.handleToolResult(block, context.items);
         break;
       default:
         break;
@@ -5658,7 +5670,10 @@ class ClaudeAgentSession implements AgentSession {
     );
   }
 
-  private handleToolResult(block: ClaudeContentChunk, items: AgentTimelineItem[]): void {
+  private async handleToolResult(
+    block: ClaudeContentChunk,
+    items: AgentTimelineItem[],
+  ): Promise<void> {
     const entry =
       typeof block.tool_use_id === "string" ? this.toolUseCache.get(block.tool_use_id) : undefined;
     const blockToolName = typeof block.tool_name === "string" ? block.tool_name : undefined;
@@ -5691,7 +5706,7 @@ class ClaudeAgentSession implements AgentSession {
     this.rememberSettledSubagentToolCall(settledToolCall, entry);
 
     for (const image of images) {
-      const imageItem = renderProviderImageOutputAsAssistantMarkdown(image, {
+      const imageItem = await renderProviderImageOutputAsAssistantMarkdown(image, {
         materialize: materializeProviderImage,
       });
       if (imageItem) {
@@ -5915,13 +5930,13 @@ class ClaudeAgentSession implements AgentSession {
     return false;
   }
 
-  private mapPartialEvent(
+  private async mapPartialEvent(
     event: SDKPartialAssistantMessage["event"],
     options?: {
       suppressAssistantText?: boolean;
       suppressReasoning?: boolean;
     },
-  ): AgentTimelineItem[] {
+  ): Promise<AgentTimelineItem[]> {
     if (this.updatePartialEventToolState(event)) {
       return [];
     }
@@ -5929,14 +5944,14 @@ class ClaudeAgentSession implements AgentSession {
     switch (event.type) {
       case "content_block_start":
         return isClaudeContentChunk(event.content_block)
-          ? this.mapBlocksToTimeline([event.content_block], {
+          ? await this.mapBlocksToTimeline([event.content_block], {
               suppressAssistantText: options?.suppressAssistantText,
               suppressReasoning: options?.suppressReasoning,
             })
           : [];
       case "content_block_delta":
         return isClaudeContentChunk(event.delta)
-          ? this.mapBlocksToTimeline([event.delta], {
+          ? await this.mapBlocksToTimeline([event.delta], {
               suppressAssistantText: options?.suppressAssistantText,
               suppressReasoning: options?.suppressReasoning,
             })
@@ -6299,12 +6314,14 @@ interface ClaudeHistoryEntry {
   [key: string]: unknown;
 }
 
-function mapAssistantHistoryBlocksWithMessageId(
+async function mapAssistantHistoryBlocksWithMessageId(
   entry: ClaudeHistoryEntry,
   content: string | ClaudeContentChunk[],
-  mapBlocks: (content: string | ClaudeContentChunk[]) => AgentTimelineItem[],
-): AgentTimelineItem[] {
-  const items = mapBlocks(content);
+  mapBlocks: (
+    content: string | ClaudeContentChunk[],
+  ) => AgentTimelineItem[] | Promise<AgentTimelineItem[]>,
+): Promise<AgentTimelineItem[]> {
+  const items = await mapBlocks(content);
   const assistantMessageId =
     typeof entry.uuid === "string" && entry.uuid.length > 0 ? entry.uuid : null;
   if (!assistantMessageId) {
@@ -6372,10 +6389,12 @@ function isProviderImageMessage(item: AgentTimelineItem): boolean {
   return item.type === "assistant_message" && isProviderImageMarkdown(item.text);
 }
 
-export function convertClaudeHistoryEntry(
+export async function convertClaudeHistoryEntry(
   entry: ClaudeHistoryEntry,
-  mapBlocks: (content: string | ClaudeContentChunk[]) => AgentTimelineItem[],
-): AgentTimelineItem[] {
+  mapBlocks: (
+    content: string | ClaudeContentChunk[],
+  ) => AgentTimelineItem[] | Promise<AgentTimelineItem[]>,
+): Promise<AgentTimelineItem[]> {
   const preamble = convertClaudeHistoryEntryPreamble(entry);
   if ("shortCircuit" in preamble) {
     return preamble.shortCircuit;
@@ -6414,7 +6433,7 @@ export function convertClaudeHistoryEntry(
   }
 
   if (hasToolBlock && normalizedBlocks) {
-    const mapped = mapBlocks(normalizedBlocks);
+    const mapped = await mapBlocks(normalizedBlocks);
     if (entry.type === "user") {
       // tool_result handling (handleToolResult) emits image markdown as an assistant_message
       // alongside the tool_call. User-entry text blocks also map to assistant_message in this path
@@ -6428,7 +6447,7 @@ export function convertClaudeHistoryEntry(
   }
 
   if (entry.type === "assistant" && contentValue) {
-    return mapAssistantHistoryBlocksWithMessageId(entry, contentValue, mapBlocks);
+    return await mapAssistantHistoryBlocksWithMessageId(entry, contentValue, mapBlocks);
   }
 
   return timeline;
