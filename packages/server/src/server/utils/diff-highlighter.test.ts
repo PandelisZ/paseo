@@ -1,8 +1,12 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { setImmediate } from "node:timers/promises";
+import { performance } from "node:perf_hooks";
+import { highlightCode } from "@getpaseo/highlight";
 import {
+  DiffHighlightRequests,
   parseDiff,
   reconstructNewFile,
   reconstructOldFile,
@@ -818,4 +822,119 @@ index 1111111..2222222 100644
       rmSync(cwd, { recursive: true, force: true });
     }
   });
+});
+
+describe("diff highlighting budget", () => {
+  it.each(["supplied", "local"] as const)(
+    "keeps a one-line diff on a 5 MiB %s source responsive and renders it without tokens",
+    async (source) => {
+      const cwd = mkdtempSync(join(tmpdir(), "diff-highlight-budget-"));
+      const oldFileContent = "const value = Math.max(42, 7);\n".repeat(
+        Math.ceil((5 * 1024 * 1024) / 30),
+      );
+      const newFileContent = oldFileContent.replace("42", "43");
+      writeFileSync(join(cwd, "example.ts"), newFileContent);
+      const file = parseDiff(`diff --git a/example.ts b/example.ts
+--- a/example.ts
++++ b/example.ts
+@@ -1 +1 @@
+-const value = Math.max(42, 7);
++const value = Math.max(43, 7);`)[0];
+      let lastTick = performance.now();
+      let longestGap = 0;
+      const timer = setInterval(() => {
+        const now = performance.now();
+        longestGap = Math.max(longestGap, now - lastTick);
+        lastTick = now;
+      }, 1);
+      try {
+        await setImmediate();
+        const highlighted = await highlightDiffWithFileContent(
+          file,
+          cwd,
+          source === "supplied" ? { oldFileContent } : {},
+        );
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        console.info({ sourceBytes: Buffer.byteLength(oldFileContent), longestGap });
+        expect(longestGap).toBeLessThan(50);
+        expect(highlighted).toEqual(file);
+      } finally {
+        clearInterval(timer);
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  it("preserves byte-identical tokens below the budget, including multiline syntax", async () => {
+    const oldFileContent = "/*\nold comment\n*/\nconst value = 42;";
+    const newFileContent = oldFileContent.replace("old", "new");
+    const file = parseDiff(`diff --git a/example.ts b/example.ts
+--- a/example.ts
++++ b/example.ts
+@@ -2 +2 @@
+-old comment
++new comment`)[0];
+    const highlighted = await highlightDiffWithFileContent(file, ".", {
+      oldFileContent,
+      newFileContent,
+    });
+    expect(JSON.stringify(highlighted.hunks[0].lines[1].tokens)).toBe(
+      JSON.stringify(highlightCode(oldFileContent, file.path)[1]),
+    );
+    expect(JSON.stringify(highlighted.hunks[0].lines[2].tokens)).toBe(
+      JSON.stringify(highlightCode(newFileContent, file.path)[1]),
+    );
+  });
+});
+
+it("a newer request cancels the whole previous diff even before its sources arrive", async () => {
+  const requests = new DiffHighlightRequests();
+  const file = parseDiff(SIMPLE_DIFF)[0];
+  const source = "const value = Math.max(42, 7);\n".repeat(3_000);
+  const old = requests.run("checkout-target", async (signal) => {
+    await setImmediate();
+    return highlightDiffWithFileContent(file, ".", {
+      oldFileContent: source,
+      newFileContent: source,
+      signal,
+    });
+  });
+  const current = requests.run("checkout-target", (signal) =>
+    highlightDiffWithFileContent(file, ".", {
+      oldFileContent: "const bar = 2;",
+      newFileContent: "const bar = 3;",
+      signal,
+    }),
+  );
+  expect(await old).toEqual(file);
+  expect((await current).hunks[0].lines.some((line) => line.tokens)).toBe(true);
+});
+
+it("keeps real session.ts diffs highlighted and byte-identical under the source budget", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "diff-highlight-real-source-"));
+  try {
+    const oldFileContent = readFileSync(new URL("../session.ts", import.meta.url), "utf8");
+    const newFileContent = oldFileContent.replace(
+      "WorkspaceRuntimeStore",
+      "WorkspaceRuntimeSnapshot",
+    );
+    writeFileSync(join(cwd, "session.ts"), newFileContent);
+    const oldLine = oldFileContent.split("\n")[0];
+    const newLine = newFileContent.split("\n")[0];
+    const [file] = parseDiff(`diff --git a/session.ts b/session.ts
+--- a/session.ts
++++ b/session.ts
+@@ -1 +1 @@
+-${oldLine}
++${newLine}`);
+    const highlighted = await highlightDiffWithFileContent(file, cwd, { oldFileContent });
+    const removed = highlighted.hunks[0].lines.find((line) => line.type === "remove");
+    const added = highlighted.hunks[0].lines.find((line) => line.type === "add");
+    expect(removed?.tokens).toEqual(highlightCode(oldFileContent, "session.ts")[0]);
+    expect(added?.tokens).toEqual(highlightCode(newFileContent, "session.ts")[0]);
+    expect(added?.tokens?.some((token) => token.style !== null)).toBe(true);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
