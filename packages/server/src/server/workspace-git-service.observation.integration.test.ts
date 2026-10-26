@@ -534,6 +534,7 @@ test("Git refresh, command tracing and 10,000 ignored alias events do no synchro
   const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
   const source = `
     import assert from 'node:assert/strict';
+    import { write } from 'node:fs';
     import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
     import { tmpdir } from 'node:os';
     import { join } from 'node:path';
@@ -549,6 +550,10 @@ test("Git refresh, command tracing and 10,000 ignored alias events do no synchro
     const worktree = join(home, 'worktrees', 'project', 'topic');
     const alias = join(root, 'alias');
     const logger = pino({ level: 'trace' }, { write() {} });
+    // Async descriptor writes avoid Windows stderr's synchronous stream API.
+    const marker = (label) => new Promise((resolve, reject) => {
+      write(2, label + '\\n', (error) => error ? reject(error) : resolve());
+    });
     let callback;
     let notifications = 0;
     const service = new WorkspaceGitServiceImpl({ logger, paseoHome: home, deps: {
@@ -578,15 +583,15 @@ test("Git refresh, command tracing and 10,000 ignored alias events do no synchro
         await tick();
         let fsCalls = 0;
         const hook = createHook({ init(_id, type) { if (type.startsWith('FSREQ')) fsCalls++; } });
+        await marker('FILTER_START');
         hook.enable();
-        process.stderr.write('FILTER_START\\n');
         const started = performance.now();
         const pulse = new Promise((resolve) => setTimeout(() => resolve(performance.now() - started), 0));
         callback(null, events);
         const filterMs = performance.now() - started;
         hook.disable();
         const loopGapMs = await pulse;
-        process.stderr.write('FILTER_END\\n');
+        await marker('FILTER_END');
         assert.equal(fsCalls, 0, "filesystem calls");
         assert.equal(notifications, 0, "ignored event notification");
         samples.push({ filterMs, loopGapMs, fsCalls });
@@ -596,12 +601,12 @@ test("Git refresh, command tracing and 10,000 ignored alias events do no synchro
       // Alias identity remains useful after deletion: no per-event realpath can recover this file.
       callback(null, [{ type: 'delete', path: join(worktree, 'tracked.txt') }]);
       assert.equal(notifications, 1);
-      process.stderr.write('REFRESH_START\\n');
+      await marker('REFRESH_START');
       const snapshot = await service.getSnapshot(worktree);
       assert.equal(snapshot.git.isGit, true);
       assert.equal(snapshot.git.isPaseoOwnedWorktree, true);
       await runGitCommand(['status', '--porcelain'], { cwd: alias, logger });
-      process.stderr.write('REFRESH_END\\n');
+      await marker('REFRESH_END');
       subscription.unsubscribe();
     } finally {
       await service.dispose();
