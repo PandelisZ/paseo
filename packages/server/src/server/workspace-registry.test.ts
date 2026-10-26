@@ -116,6 +116,35 @@ describe("workspace registries", () => {
     expect(await projectRegistry.list()).toEqual([]);
   });
 
+  test("writes once per mutation and skips missing-record mutations", async () => {
+    let writes = 0;
+    const registry = new FileBackedProjectRegistry(
+      path.join(tmpDir, "projects", "write-count.json"),
+      logger,
+      {
+        writeRecords: async (filePath, records) => {
+          writes++;
+          await writeJsonFileAtomic(filePath, records);
+        },
+      },
+    );
+    const project = createPersistedProjectRecord({
+      projectId: "counted",
+      rootPath: tmpDir,
+      kind: "git",
+      displayName: "Counted",
+      createdAt: "2026-03-01T00:00:00.000Z",
+      updatedAt: "2026-03-01T00:00:00.000Z",
+    });
+    await registry.upsert(project);
+    expect(writes).toBe(1);
+    await registry.update("missing", (current) => current);
+    await registry.remove("missing");
+    expect(writes).toBe(1);
+    await registry.update(project.projectId, (current) => ({ ...current, customName: "Changed" }));
+    expect(writes).toBe(2);
+  });
+
   test("preserves a concurrent project update when archiving", async () => {
     let pauseNextWrite = false;
     let releaseWrite!: () => void;
