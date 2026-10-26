@@ -10,7 +10,7 @@ import {
   buildStringCommandShellInvocation,
   createStringCommandShellEnv,
 } from "./string-command-shell.js";
-import { readPaseoConfigJson, resolvePaseoConfigPath } from "./paseo-config-file.js";
+import { readPaseoConfig } from "./paseo-config-file.js";
 export {
   PaseoConfigRawSchema,
   PaseoLifecycleCommandRawSchema,
@@ -20,7 +20,7 @@ export {
   type PaseoConfig,
   type PaseoConfigRaw,
 } from "@getpaseo/protocol/paseo-config-schema";
-import { PaseoConfigSchema, type PaseoConfig } from "@getpaseo/protocol/paseo-config-schema";
+import { type PaseoConfig } from "@getpaseo/protocol/paseo-config-schema";
 import {
   createPaseoWorktreeChangeRequestHint,
   normalizeBaseRefName,
@@ -246,21 +246,7 @@ export class InvalidGitBranchNameError extends Error {
   }
 }
 
-export type ReadPaseoConfigResult =
-  | { ok: true; config: PaseoConfig | null }
-  | { ok: false; configPath: string; error: unknown };
-
-export function readPaseoConfig(repoRoot: string): ReadPaseoConfigResult {
-  try {
-    const json = readPaseoConfigJson(repoRoot);
-    if (json === null) {
-      return { ok: true, config: null };
-    }
-    return { ok: true, config: PaseoConfigSchema.parse(json) };
-  } catch (error) {
-    return { ok: false, configPath: resolvePaseoConfigPath(repoRoot), error };
-  }
-}
+export { readPaseoConfig, type ReadPaseoConfigResult } from "./paseo-config-file.js";
 
 export function paseoConfigParseError(failure: { configPath: string; error: unknown }): Error {
   const detail = failure.error instanceof Error ? failure.error.message : String(failure.error);
@@ -269,24 +255,26 @@ export function paseoConfigParseError(failure: { configPath: string; error: unkn
   });
 }
 
-function readPaseoConfigOrThrow(repoRoot: string): PaseoConfig | null {
-  const result = readPaseoConfig(repoRoot);
+async function readPaseoConfigOrThrow(repoRoot: string): Promise<PaseoConfig | null> {
+  const result = await readPaseoConfig(repoRoot);
   if (!result.ok) {
     throw paseoConfigParseError(result);
   }
   return result.config;
 }
 
-export function getWorktreeSetupCommands(repoRoot: string): string[] {
-  return readPaseoConfigOrThrow(repoRoot)?.worktree?.setup ?? [];
+export async function getWorktreeSetupCommands(repoRoot: string): Promise<string[]> {
+  return (await readPaseoConfigOrThrow(repoRoot))?.worktree?.setup ?? [];
 }
 
-export function getWorktreeTeardownCommands(repoRoot: string): string[] {
-  return readPaseoConfigOrThrow(repoRoot)?.worktree?.teardown ?? [];
+export async function getWorktreeTeardownCommands(repoRoot: string): Promise<string[]> {
+  return (await readPaseoConfigOrThrow(repoRoot))?.worktree?.teardown ?? [];
 }
 
-export function getWorktreeTerminalSpecs(repoRoot: string): WorktreeTerminalConfig[] {
-  const terminals = readPaseoConfigOrThrow(repoRoot)?.worktree?.terminals;
+export async function getWorktreeTerminalSpecs(
+  repoRoot: string,
+): Promise<WorktreeTerminalConfig[]> {
+  const terminals = (await readPaseoConfigOrThrow(repoRoot))?.worktree?.terminals;
   if (!Array.isArray(terminals) || terminals.length === 0) {
     return [];
   }
@@ -641,7 +629,7 @@ export async function runWorktreeSetupCommands(options: {
   onEvent?: (event: WorktreeSetupCommandProgressEvent) => void;
 }): Promise<WorktreeSetupCommandResult[]> {
   // Read paseo.json from the worktree (it will have the same content as the source repo)
-  const setupCommands = getWorktreeSetupCommands(options.worktreePath);
+  const setupCommands = await getWorktreeSetupCommands(options.worktreePath);
   if (setupCommands.length === 0) {
     return [];
   }
@@ -745,7 +733,7 @@ export async function runWorktreeTeardownCommands(options: {
   if (getRealpathAwareRelativePath(options.worktreePath, teardownCwd) === null) {
     throw new Error(`Worktree teardown cwd is outside the worktree: ${teardownCwd}`);
   }
-  const teardownCommands = getWorktreeTeardownCommands(teardownCwd);
+  const teardownCommands = await getWorktreeTeardownCommands(teardownCwd);
   if (teardownCommands.length === 0) {
     return [];
   }

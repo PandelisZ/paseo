@@ -48,8 +48,8 @@ import { delimiter, dirname, join } from "path";
 import { tmpdir } from "os";
 import net from "node:net";
 
-function loadConfigForTest(repoRoot: string): PaseoConfig | null {
-  const result = readPaseoConfig(repoRoot);
+async function loadConfigForTest(repoRoot: string): Promise<PaseoConfig | null> {
+  const result = await readPaseoConfig(repoRoot);
   return result.ok ? result.config : null;
 }
 
@@ -894,7 +894,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         worktreePath: result.worktreePath,
         branchName: result.branchName,
       });
-      expect(getWorktreeSetupCommands(result.worktreePath)).toEqual([
+      expect(await getWorktreeSetupCommands(result.worktreePath)).toEqual([
         'greeting="hello from string setup"\necho "$greeting" > setup.log',
       ]);
       expect(readFileSync(join(result.worktreePath, "setup.log"), "utf8").trim()).toBe(
@@ -963,7 +963,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       expect(readFileSync(join(repoDir, "setup-path.log"), "utf8").trim()).toBe("shim:ok");
     });
 
-    it("treats blank lifecycle strings as empty", () => {
+    it("treats blank lifecycle strings as empty", async () => {
       writeFileSync(
         join(repoDir, "paseo.json"),
         JSON.stringify({
@@ -974,11 +974,11 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         }),
       );
 
-      expect(getWorktreeSetupCommands(repoDir)).toEqual([]);
-      expect(getWorktreeTeardownCommands(repoDir)).toEqual([]);
+      expect(await getWorktreeSetupCommands(repoDir)).toEqual([]);
+      expect(await getWorktreeTeardownCommands(repoDir)).toEqual([]);
     });
 
-    it("filters non-string and blank entries from lifecycle arrays", () => {
+    it("filters non-string and blank entries from lifecycle arrays", async () => {
       writeFileSync(
         join(repoDir, "paseo.json"),
         JSON.stringify({
@@ -999,11 +999,11 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         }),
       );
 
-      expect(getWorktreeSetupCommands(repoDir)).toEqual([
+      expect(await getWorktreeSetupCommands(repoDir)).toEqual([
         'echo "first" > setup-array.log',
         'echo "second" >> setup-array.log',
       ]);
-      expect(getWorktreeTeardownCommands(repoDir)).toEqual([
+      expect(await getWorktreeTeardownCommands(repoDir)).toEqual([
         'echo "first" > "$PASEO_SOURCE_CHECKOUT_PATH/teardown-array.log"',
         'echo "second" >> "$PASEO_SOURCE_CHECKOUT_PATH/teardown-array.log"',
       ]);
@@ -1134,7 +1134,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       };
       writeFileSync(join(repoDir, "paseo.json"), JSON.stringify(paseoConfig));
 
-      expect(getWorktreeTerminalSpecs(repoDir)).toEqual([
+      expect(await getWorktreeTerminalSpecs(repoDir)).toEqual([
         { name: "Dev Server", command: "npm run dev" },
         { command: "cd packages/app && npm run dev" },
       ]);
@@ -1154,7 +1154,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       };
       writeFileSync(join(repoDir, "paseo.json"), JSON.stringify(paseoConfig));
 
-      expect(getWorktreeTerminalSpecs(repoDir)).toEqual([
+      expect(await getWorktreeTerminalSpecs(repoDir)).toEqual([
         { name: "Watch", command: "npm run watch" },
         { command: "npm run test" },
       ]);
@@ -1172,7 +1172,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         }),
       );
 
-      const scriptConfigs = getScriptConfigs(loadConfigForTest(repoDir));
+      const scriptConfigs = getScriptConfigs(await loadConfigForTest(repoDir));
       const typecheck = scriptConfigs.get("typecheck");
 
       expect(typecheck).toEqual({
@@ -1196,7 +1196,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         }),
       );
 
-      const scriptConfigs = getScriptConfigs(loadConfigForTest(repoDir));
+      const scriptConfigs = getScriptConfigs(await loadConfigForTest(repoDir));
       const server = scriptConfigs.get("server");
 
       expect(server).toEqual({
@@ -1236,7 +1236,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         }),
       );
 
-      expect(getScriptConfigs(loadConfigForTest(repoDir))).toEqual(
+      expect(getScriptConfigs(await loadConfigForTest(repoDir))).toEqual(
         new Map([
           ["valid", { command: "npm run valid" }],
           ["invalidType", { command: "npm run worker" }],
@@ -1547,7 +1547,7 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
 
       await deletePaseoWorktree({ cwd: repoDir, worktreePath: created.worktreePath, paseoHome });
 
-      expect(getWorktreeTeardownCommands(repoDir)).toEqual([
+      expect(await getWorktreeTeardownCommands(repoDir)).toEqual([
         'cleanup_message="teardown string"\necho "$cleanup_message" > "$PASEO_SOURCE_CHECKOUT_PATH/teardown.log"',
       ]);
       expect(readFileSync(join(repoDir, "teardown.log"), "utf8").trim()).toBe("teardown string");

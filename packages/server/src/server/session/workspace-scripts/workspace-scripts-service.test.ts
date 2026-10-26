@@ -156,14 +156,20 @@ describe("buildSnapshot", () => {
   test("returns no scripts when the service proxy is unavailable", async () => {
     const { service } = buildService({ serviceProxy: null });
     expect(
-      service.buildSnapshot({ workspaceId: "ws-1", cwd: "/tmp/repo" } as PersistedWorkspaceRecord),
+      await service.buildSnapshot({
+        workspaceId: "ws-1",
+        cwd: "/tmp/repo",
+      } as PersistedWorkspaceRecord),
     ).toEqual([]);
   });
 
   test("returns no scripts when the runtime store is unavailable", async () => {
     const { service } = buildService({ scriptRuntimeStore: null });
     expect(
-      service.buildSnapshot({ workspaceId: "ws-1", cwd: "/tmp/repo" } as PersistedWorkspaceRecord),
+      await service.buildSnapshot({
+        workspaceId: "ws-1",
+        cwd: "/tmp/repo",
+      } as PersistedWorkspaceRecord),
     ).toEqual([]);
   });
 
@@ -172,7 +178,7 @@ describe("buildSnapshot", () => {
     tempDirs.push(dir);
     const { service } = buildService();
     expect(
-      service.buildSnapshot({ workspaceId: "ws-1", cwd: dir } as PersistedWorkspaceRecord),
+      await service.buildSnapshot({ workspaceId: "ws-1", cwd: dir } as PersistedWorkspaceRecord),
     ).toEqual([]);
   });
 
@@ -207,7 +213,7 @@ describe("buildSnapshot", () => {
       runtimeStore: { get: () => null },
     });
 
-    expect(service.buildSnapshot(workspace, project)[0]?.hostname).toBe(
+    expect((await service.buildSnapshot(workspace, project))[0]?.hostname).toBe(
       serviceProxy.projectWorkspaceService({
         projectSlug: deriveProjectServiceSlug(project),
         branchName: workspace.branch,
@@ -352,10 +358,12 @@ describe("start", () => {
       daemonPort: 6767,
       daemonListenHost: "127.0.0.1",
     });
-    expect(published).toContainEqual({
-      type: "script_status_update",
-      payload: { workspaceId: "ws-1", scripts: [] },
-    });
+    await expect
+      .poll(() => published)
+      .toContainEqual({
+        type: "script_status_update",
+        payload: { workspaceId: "ws-1", scripts: [] },
+      });
     expect(emitted).toContainEqual({
       type: "start_workspace_script_response",
       payload: {
@@ -449,7 +457,7 @@ describe("start", () => {
     const serviceProxy = createServiceProxySubsystem({ logger });
     const { service, spawnCalls } = buildService({ workspace, project, serviceProxy });
 
-    const snapshot = service.buildSnapshot(workspace, project);
+    const snapshot = await service.buildSnapshot(workspace, project);
     await service.start({ ...request, workspaceId: workspace.workspaceId });
 
     const started = spawnCalls[0]!;
