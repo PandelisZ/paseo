@@ -62,7 +62,7 @@ export function createWorkspaceScriptsService(deps: {
   getDaemonTcpHost: (() => string | null) | null;
   serviceProxyPublicBaseUrl: string | null;
   resolveScriptHealth: ((hostname: string) => ScriptHealthState | null) | null;
-  globalServicePorts?: PaseoServicePortAllocation;
+  getGlobalServicePorts: () => Promise<PaseoServicePortAllocation | undefined>;
   logger: pino.Logger;
   emit: (message: SessionOutboundMessage) => void;
   // Script status is daemon state, so it reaches every client, not only the requester.
@@ -81,7 +81,7 @@ export function createWorkspaceScriptsService(deps: {
     getDaemonTcpHost,
     serviceProxyPublicBaseUrl,
     resolveScriptHealth,
-    globalServicePorts,
+    getGlobalServicePorts,
     logger,
     emit,
     publishStatusUpdate,
@@ -172,6 +172,7 @@ export function createWorkspaceScriptsService(deps: {
 
   async function launchProcess(input: { workspaceId: string; scriptName: string }) {
     const available = requireAvailable();
+    const globalServicePorts = await getGlobalServicePorts();
     const workspace = await getWorkspace(input.workspaceId);
     await assertAutomationAllowed(workspace.workspaceId);
     const project = await projectRegistry.get(workspace.projectId);

@@ -1,3 +1,5 @@
+import { DaemonConfigStore } from "../../daemon-config-store.js";
+import type { PaseoServicePortAllocation } from "@getpaseo/protocol/paseo-config-schema";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,6 +84,7 @@ interface BuildOptions {
   spawnThrows?: string;
   runtimeStore?: Pick<WorkspaceRuntimeStore, "get">;
   automationError?: Error;
+  getGlobalServicePorts?: () => Promise<PaseoServicePortAllocation | undefined>;
 }
 
 function buildService(options: BuildOptions = {}) {
@@ -111,6 +114,7 @@ function buildService(options: BuildOptions = {}) {
     getDaemonTcpHost: () => "127.0.0.1",
     serviceProxyPublicBaseUrl: null,
     resolveScriptHealth: null,
+    getGlobalServicePorts: options.getGlobalServicePorts ?? (async () => undefined),
     logger,
     emit: (message) => emitted.push(message),
     publishStatusUpdate: (message) => published.push(message),
@@ -150,6 +154,24 @@ afterEach(() => {
       rmSync(dir, { recursive: true, force: true });
     }
   }
+});
+
+test("reads external service-port edits at the next launch without construction IO", async () => {
+  const home = mkdtempSync(join(tmpdir(), "workspace-service-ports-"));
+  tempDirs.push(home);
+  const store = new DaemonConfigStore(home, {
+    providers: {},
+    mcp: { enabled: true, injectIntoAgents: false },
+  });
+  const { service, spawnCalls } = buildService({
+    getGlobalServicePorts: () => store.readServicePorts(),
+  });
+  writeFileSync(
+    join(home, "config.json"),
+    JSON.stringify({ worktrees: { servicePorts: { range: "9000-9999" } } }),
+  );
+  await service.start(request);
+  expect(spawnCalls.map((call) => call.globalServicePorts)).toEqual([{ range: "9000-9999" }]);
 });
 
 describe("buildSnapshot", () => {
