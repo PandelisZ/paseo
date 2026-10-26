@@ -49,29 +49,6 @@ interface ParseAndHighlightDiffOptions {
   getNewFileContent?: (file: ParsedDiffFile) => Promise<string | null>;
 }
 
-/** Owns supersession for a whole diff, including sources that arrive after cancellation. */
-export class DiffHighlightRequests {
-  private readonly active = new Map<string, AbortController>();
-
-  async run<T>(
-    target: string,
-    operation: (signal: AbortSignal) => Promise<T>,
-    parentSignal?: AbortSignal,
-  ): Promise<T> {
-    this.active.get(target)?.abort();
-    const controller = new AbortController();
-    this.active.set(target, controller);
-    const signal = parentSignal
-      ? AbortSignal.any([parentSignal, controller.signal])
-      : controller.signal;
-    try {
-      return await operation(signal);
-    } finally {
-      if (this.active.get(target) === controller) this.active.delete(target);
-    }
-  }
-}
-
 /**
  * Parse a unified diff into structured data
  */
@@ -315,23 +292,23 @@ async function buildFullFileTokenLookup(
   return new Map(highlighted.map((tokens, index) => [index + 1, tokens]));
 }
 
-// null means over budget; undefined means unavailable and permits reconstruction.
-async function readHighlightSource(path: string): Promise<string | null | undefined> {
+async function readHighlightSource(path: string): Promise<string | null> {
   let handle;
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size > HIGHLIGHT_MAX_SOURCE_BYTES) return null;
-    const buffer = Buffer.alloc(HIGHLIGHT_MAX_SOURCE_BYTES + 1);
+    const buffer = Buffer.alloc(Math.min(stat.size, HIGHLIGHT_MAX_SOURCE_BYTES) + 1);
     let offset = 0;
     while (offset < buffer.length) {
       const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, null);
       if (bytesRead === 0) break;
       offset += bytesRead;
     }
-    return offset > HIGHLIGHT_MAX_SOURCE_BYTES ? null : buffer.toString("utf8", 0, offset);
+    // A full buffer includes the extra byte: the source grew after stat.
+    return offset === buffer.length ? null : buffer.toString("utf8", 0, offset);
   } catch {
-    return undefined;
+    return null;
   } finally {
     await handle?.close();
   }
@@ -418,16 +395,16 @@ export async function highlightDiffWithFileContent(
     typeof options.newFileContent === "string"
       ? options.newFileContent
       : await readHighlightSource(resolve(cwd, file.path));
-  if (newContent === null || options.signal?.aborted) return file;
+  if (options.signal?.aborted) return file;
 
   const oldTokens = await highlightAvailableSource(
     options.oldFileContent,
     file.path,
     options.signal,
   );
-  if (oldTokens === null || options.signal?.aborted) return file;
+  if (options.signal?.aborted) return file;
   const newTokens = await highlightAvailableSource(newContent, file.path, options.signal);
-  if (newTokens === null || options.signal?.aborted) return file;
+  if (options.signal?.aborted) return file;
   if (oldTokens && newTokens) return applyTokensToHunks(file, newTokens, oldTokens);
   const reconstructed = await buildBudgetedReconstructedTokens(file, options.signal);
   if (!reconstructed || options.signal?.aborted) return file;
@@ -442,23 +419,17 @@ function isDiffHighlightEligible(
   file: ParsedDiffFile,
   options: HighlightDiffWithFileContentOptions,
 ): boolean {
-  return (
-    !options.signal?.aborted &&
-    isLanguageSupported(file.path) &&
-    !hasOversizedDiffLine(file) &&
-    ![options.oldFileContent, options.newFileContent].some(
-      (content) => typeof content === "string" && exceedsSourceBudget(content),
-    )
-  );
+  return !options.signal?.aborted && isLanguageSupported(file.path) && !hasOversizedDiffLine(file);
 }
 
 async function highlightAvailableSource(
   content: string | null | undefined,
   path: string,
   signal?: AbortSignal,
-): Promise<Map<number, HighlightToken[]> | null | undefined> {
+): Promise<Map<number, HighlightToken[]> | null> {
   // Preserve the existing hunk-context fallback for oversized individual lines.
-  if (typeof content !== "string" || hasOversizedLine(content)) return undefined;
+  if (typeof content !== "string" || exceedsSourceBudget(content) || hasOversizedLine(content))
+    return null;
   return buildFullFileTokenLookup(content, path, signal);
 }
 

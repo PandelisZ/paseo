@@ -11,7 +11,6 @@ import { maxSecuredPlaintextByteLength } from "@getpaseo/relay";
 import type { Logger } from "pino";
 import type { ParsedDiffFile } from "../server/utils/diff-highlighter.js";
 import {
-  DiffHighlightRequests,
   highlightDiffWithFileContent,
   parseAndHighlightDiff,
   parseDiff,
@@ -2704,8 +2703,6 @@ async function readCommitRenames(cwd: string, sha: string): Promise<ReadonlyMap<
   return renames;
 }
 
-const diffHighlightRequests = new DiffHighlightRequests();
-
 /**
  * Fetches the unified diff of a single file as introduced by one commit and
  * parses it into the same {@link ParsedDiffFile} shape the diff subscription
@@ -2718,29 +2715,17 @@ const diffHighlightRequests = new DiffHighlightRequests();
  * binary-only (no textual hunks). Throws on git failure (e.g. an unknown sha),
  * which the caller maps to a typed checkout error.
  */
-export function getCommitFileDiff(input: {
+export async function getCommitFileDiff({
+  cwd,
+  sha,
+  path,
+  signal,
+}: {
   cwd: string;
   sha: string;
   path: string;
+  signal?: AbortSignal;
 }): Promise<ParsedDiffFile | null> {
-  return diffHighlightRequests.run(
-    JSON.stringify(["commit", resolve(input.cwd), input.sha, input.path]),
-    (signal) => readCommitFileDiff(input, signal),
-  );
-}
-
-async function readCommitFileDiff(
-  {
-    cwd,
-    sha,
-    path,
-  }: {
-    cwd: string;
-    sha: string;
-    path: string;
-  },
-  signal: AbortSignal,
-): Promise<ParsedDiffFile | null> {
   const worktreeRoot = await requireGitWorktreeRoot(cwd);
   const renames = await getCommitRenames(worktreeRoot, sha);
   const oldPath = renames.get(path);
@@ -3150,7 +3135,7 @@ export function warmCheckoutShortstatInBackground(
 }
 
 interface AppendStructuredTrackedDiffsInput {
-  signal: AbortSignal;
+  signal?: AbortSignal;
   cwd: string;
   trackedChanges: CheckoutFileChange[];
   trackedNumstatByPath: Map<string, FileStat>;
@@ -3166,7 +3151,7 @@ interface AppendStructuredTrackedDiffsInput {
 }
 
 async function buildHighlightedTrackedDiffFile(input: {
-  signal: AbortSignal;
+  signal?: AbortSignal;
   cwd: string;
   change: CheckoutFileChange;
   parsedFile: ParsedDiffFile;
@@ -3317,7 +3302,7 @@ async function appendStructuredTrackedDiffs(
 }
 
 interface ProcessUntrackedChangeInput {
-  signal: AbortSignal;
+  signal?: AbortSignal;
   cwd: string;
   change: CheckoutFileChange;
   ignoreWhitespace: boolean;
@@ -3560,31 +3545,11 @@ async function prepareAllChangesIndex(cwd: string, baseRef: string) {
   }
 }
 
-export function getCheckoutDiff(
+export async function getCheckoutDiff(
   cwd: string,
   compare: CheckoutDiffCompare,
   context?: CheckoutContext,
   signal?: AbortSignal,
-): Promise<CheckoutDiffResult> {
-  return diffHighlightRequests.run(
-    JSON.stringify([
-      "checkout",
-      resolve(cwd),
-      compare.mode,
-      compare.mode !== "uncommitted" ? (compare.baseRef ?? null) : null,
-      compare.ignoreWhitespace === true,
-      compare.includeStructured === true,
-    ]),
-    (highlightSignal) => loadCheckoutDiff(cwd, compare, context, highlightSignal),
-    signal,
-  );
-}
-
-async function loadCheckoutDiff(
-  cwd: string,
-  compare: CheckoutDiffCompare,
-  context: CheckoutContext | undefined,
-  signal: AbortSignal,
 ): Promise<CheckoutDiffResult> {
   cwd = await requireGitWorktreeRoot(cwd);
 
@@ -3614,7 +3579,7 @@ async function readCheckoutDiff(
   cwd: string,
   compare: CheckoutDiffCompare,
   refsForDiff: CheckoutDiffRefs,
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ): Promise<CheckoutDiffResult> {
   const ignoreWhitespace = compare.ignoreWhitespace === true;
   let effectiveRefsForDiff = refsForDiff;

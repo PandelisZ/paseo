@@ -251,7 +251,10 @@ test("large source diffs stay renderable for reads, subscriptions, and commit fi
       expect(lines.filter((line) => line.type === "add").map((line) => line.content)).toEqual([
         `const value = Math.max(${value}, 7);`,
       ]);
-      expect(lines.every((line) => line.tokens === undefined)).toBe(true);
+      expect(lines.find((line) => line.type === "add")?.tokens).toContainEqual({
+        text: value,
+        style: "number",
+      });
     };
     check(initial.files[0], "43");
     const subscription = ctx.client.observeCheckoutDiff(cwd, { mode: "uncommitted" });

@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { setImmediate } from "node:timers/promises";
 import { performance } from "node:perf_hooks";
-import { highlightCode } from "@getpaseo/highlight";
+import { SessionDelivery } from "../session/owned-subscriptions/index.js";
+import { highlightCode, highlightCodeWithBudget } from "@getpaseo/highlight";
 import {
-  DiffHighlightRequests,
   parseDiff,
   reconstructNewFile,
   reconstructOldFile,
@@ -826,7 +826,7 @@ index 1111111..2222222 100644
 
 describe("diff highlighting budget", () => {
   it.each(["supplied", "local"] as const)(
-    "keeps a one-line diff on a 5 MiB %s source responsive and renders it without tokens",
+    "keeps a one-line diff on a 5 MiB %s source responsive using hunk tokens",
     async (source) => {
       const cwd = mkdtempSync(join(tmpdir(), "diff-highlight-budget-"));
       const oldFileContent = "const value = Math.max(42, 7);\n".repeat(
@@ -857,7 +857,7 @@ describe("diff highlighting budget", () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
         console.info({ sourceBytes: Buffer.byteLength(oldFileContent), longestGap });
         expect(longestGap).toBeLessThan(50);
-        expect(highlighted).toEqual(file);
+        expect(highlighted).toEqual(highlightDiffFromHunks(file));
       } finally {
         clearInterval(timer);
         rmSync(cwd, { recursive: true, force: true });
@@ -888,27 +888,29 @@ describe("diff highlighting budget", () => {
   });
 });
 
-it("a newer request cancels the whole previous diff even before its sources arrive", async () => {
-  const requests = new DiffHighlightRequests();
-  const file = parseDiff(SIMPLE_DIFF)[0];
-  const source = "const value = Math.max(42, 7);\n".repeat(3_000);
-  const old = requests.run("checkout-target", async (signal) => {
-    await setImmediate();
-    return highlightDiffWithFileContent(file, ".", {
-      oldFileContent: source,
-      newFileContent: source,
-      signal,
-    });
+it("disconnecting the requesting source stops a parser between highlight steps", async () => {
+  const delivery = new SessionDelivery(() => {});
+  const source = {};
+  delivery.attach(source, true);
+  const yielded = Promise.withResolvers<void>();
+  let result: Awaited<ReturnType<typeof highlightCodeWithBudget>> = [];
+  const pending = delivery.request(source, { type: "ping", requestId: "highlight" }, async () => {
+    result = await highlightCodeWithBudget(
+      "const value = Math.max(42, 7);\n".repeat(3_000),
+      "file.ts",
+      {
+        signal: delivery.requestSignal,
+        yieldToEventLoop: () => {
+          yielded.resolve();
+          return setImmediate();
+        },
+      },
+    );
   });
-  const current = requests.run("checkout-target", (signal) =>
-    highlightDiffWithFileContent(file, ".", {
-      oldFileContent: "const bar = 2;",
-      newFileContent: "const bar = 3;",
-      signal,
-    }),
-  );
-  expect(await old).toEqual(file);
-  expect((await current).hunks[0].lines.some((line) => line.tokens)).toBe(true);
+  await yielded.promise;
+  await delivery.detach(source);
+  await pending;
+  expect(result).toBeNull();
 });
 
 it("keeps real session.ts diffs highlighted and byte-identical under the source budget", async () => {
@@ -935,6 +937,38 @@ it("keeps real session.ts diffs highlighted and byte-identical under the source 
     expect(added?.tokens).toEqual(highlightCode(newFileContent, "session.ts")[0]);
     expect(added?.tokens?.some((token) => token.style !== null)).toBe(true);
   } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+it("highlights a one-line hunk from an over-budget JSON source without blocking the loop", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "diff-highlight-large-json-"));
+  const oldFileContent = `{\n${'  "value": 42,\n'.repeat(100_000)}  "last": true\n}`;
+  const newFileContent = oldFileContent.replace("42", "43");
+  writeFileSync(join(cwd, "package-lock.json"), newFileContent);
+  const [file] = parseDiff(`diff --git a/package-lock.json b/package-lock.json
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -2 +2 @@
+-  "value": 42,
++  "value": 43,`);
+  let last = performance.now(),
+    longestGap = 0;
+  const timer = setInterval(() => {
+    const now = performance.now();
+    longestGap = Math.max(longestGap, now - last);
+    last = now;
+  }, 1);
+  try {
+    const result = await highlightDiffWithFileContent(file, cwd, { oldFileContent });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(longestGap).toBeLessThan(50);
+    expect(result.hunks[0].lines.find((line) => line.type === "add")?.tokens).toContainEqual({
+      text: "43",
+      style: "number",
+    });
+  } finally {
+    clearInterval(timer);
     rmSync(cwd, { recursive: true, force: true });
   }
 });
