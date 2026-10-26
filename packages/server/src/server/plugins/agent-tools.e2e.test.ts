@@ -5,7 +5,10 @@ import { expect, test } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { DaemonClient } from "../test-utils/daemon-client.js";
-import { createTestAgentClient } from "../test-utils/fake-agent-client.js";
+import {
+  createTestAgentClient,
+  type TestAgentClientOptions,
+} from "../test-utils/fake-agent-client.js";
 import { createTestPaseoDaemon } from "../test-utils/paseo-daemon.js";
 import { BuiltinPluginLoader } from "./builtin/index.js";
 import { serializePaseoToolInputParameters } from "../agent/tools/paseo-tool-serialization.js";
@@ -13,11 +16,30 @@ import type {
   AgentClient,
   AgentLaunchContext,
   AgentSessionConfig,
+  AgentPromptInput,
 } from "../agent/agent-sdk-types.js";
 
-function recordingProvider(native: boolean) {
-  const inner = createTestAgentClient("codex", { supportsMcpServers: true });
+function recordingProvider(native: boolean, callbacks: TestAgentClientOptions = {}) {
   const launches: { config: AgentSessionConfig; context?: AgentLaunchContext }[] = [];
+  const turns: { prompt: AgentPromptInput; launchCount: number }[] = [];
+  const steers: AgentPromptInput[] = [];
+  const events = { interrupts: 0 };
+  const inner = createTestAgentClient("codex", {
+    ...callbacks,
+    supportsMcpServers: true,
+    onStartTurn: (prompt, config) => {
+      turns.push({ prompt, launchCount: launches.length });
+      callbacks.onStartTurn?.(prompt, config);
+    },
+    steerActiveTurn: async (prompt) => {
+      steers.push(prompt);
+      return { status: "accepted" };
+    },
+    onInterrupt: () => {
+      events.interrupts++;
+      callbacks.onInterrupt?.();
+    },
+  });
   const provider: AgentClient = {
     provider: inner.provider,
     capabilities: { ...inner.capabilities, supportsNativePaseoTools: native },
@@ -32,7 +54,7 @@ function recordingProvider(native: boolean) {
     isAvailable: () => inner.isAvailable(),
     fetchCatalog: (options) => inner.fetchCatalog(options),
   };
-  return { provider, launches };
+  return { provider, launches, turns, steers, events };
 }
 
 const pluginSource = `
@@ -61,9 +83,10 @@ async function setup(
   native = false,
   source = pluginSource,
   policy?: { enabled?: boolean; disabledTools?: string[] },
+  providerOptions?: TestAgentClientOptions,
 ) {
   const directory = await mkdtemp(path.join(tmpdir(), "paseo-agent-tools-"));
-  const recorder = recordingProvider(native);
+  const recorder = recordingProvider(native, providerOptions);
   const daemon = await createTestPaseoDaemon({
     daemonVersion: "0.13.2",
     agentClients: { codex: recorder.provider },
@@ -507,6 +530,180 @@ test("a session hook missing tools reports a schema issue", async () => {
   try {
     await expect(h.create({ x: "y" })).rejects.toThrow('"tools"');
   } finally {
+    await h.close();
+  }
+}, 60_000);
+
+async function sendAndFinish(h: Awaited<ReturnType<typeof setup>>, agentId: string, text: string) {
+  const previous = h.turns.length;
+  await h.client.sendMessage(agentId, text, { activeTurnBehavior: "steer" });
+  await expect.poll(() => h.turns.length).toBe(previous + 1);
+  await expect.poll(() => h.daemon.daemon.agentManager.hasInFlightRun(agentId)).toBe(false);
+}
+
+test("an idle agent reopens once before its next prompt after a session-hook plugin reload", async () => {
+  const h = await setup();
+  try {
+    const b = await h.create();
+    const mcp = await h.mcp();
+    expect((await mcp.listTools()).tools.map((tool) => tool.name)).not.toContain("plugin_echo");
+    await writeFile(
+      path.join(h.directory, "tools-test", "index.server.ts"),
+      pluginSource.replace('    if (request.labels.x !== "y") return;', ""),
+    );
+    await h.client.reloadPlugin("tools-test");
+    expect(h.launches).toHaveLength(1);
+    await sendAndFinish(h, b.id, "first prompt");
+    expect(h.launches).toHaveLength(2);
+    expect(h.turns.map((turn) => turn.launchCount)).toEqual([2]);
+    expect((await mcp.listTools()).tools.map((tool) => tool.name)).toContain("plugin_echo");
+    await sendAndFinish(h, b.id, "second prompt");
+    expect(h.launches).toHaveLength(2);
+    expect(h.turns.map((turn) => turn.launchCount)).toEqual([2, 2]);
+    expect(h.events.interrupts).toBe(0);
+  } finally {
+    await h.close();
+  }
+}, 60_000);
+
+test("a busy agent is steered after plugin reload and reopens only at its next idle prompt", async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const h = await setup(true, pluginSource, undefined, { beforeTurnComplete: async () => blocked });
+  try {
+    const a = await h.create({ x: "y" });
+    await h.client.sendMessage(a.id, "busy prompt", { activeTurnBehavior: "steer" });
+    await expect.poll(() => h.daemon.daemon.agentManager.hasInFlightRun(a.id)).toBe(true);
+    await expect
+      .poll(() => h.daemon.daemon.agentManager.getAgent(a.id)!.activeTurnId)
+      .not.toBeNull();
+    const turnId = h.daemon.daemon.agentManager.getAgent(a.id)!.activeTurnId;
+    await h.client.reloadPlugin("tools-test");
+    await h.client.sendMessage(a.id, "steering prompt", { activeTurnBehavior: "steer" });
+    expect(h.steers).toHaveLength(1);
+    expect(h.launches).toHaveLength(1);
+    expect(h.events.interrupts).toBe(0);
+    expect(h.daemon.daemon.agentManager.getAgent(a.id)!.activeTurnId).toBe(turnId);
+    release();
+    await expect.poll(() => h.daemon.daemon.agentManager.hasInFlightRun(a.id)).toBe(false);
+    await sendAndFinish(h, a.id, "idle prompt");
+    expect(h.launches).toHaveLength(2);
+    expect(h.events.interrupts).toBe(0);
+    expect(h.launches.at(-1)!.context!.paseoTools!.getTool("plugin_echo")?.name).toBe(
+      "plugin_echo",
+    );
+    await sendAndFinish(h, a.id, "stable prompt");
+    expect(h.launches).toHaveLength(2);
+  } finally {
+    release();
+    await h.close();
+  }
+}, 60_000);
+
+const reloadRpcSource = pluginSource
+  .replace("import { z }", 'import { defineRpc } from "@getpaseo/plugin";\nimport { z }')
+  .replace(
+    "  return () => {};",
+    `
+  server.handle(defineRpc({ name: "reload_agent", input: z.object({ id: z.string() }), output: z.object({ id: z.string() }) }), async ({ id }, { paseo }) => {
+    const agent = paseo.agents.ref(id);
+    await agent.refresh();
+    await agent.reload();
+    return { id: agent.current().id };
+  });
+  return () => {};
+`,
+  );
+
+test("a plugin can reload an agent through the SDK and rerun session hooks with reason refresh", async () => {
+  const h = await setup(true, reloadRpcSource);
+  try {
+    const a = await h.create({ x: "y" });
+    expect(h.launches).toHaveLength(1);
+    expect(await h.client.invokePluginRpc("tools-test", "reload_agent", { id: a.id })).toEqual({
+      id: a.id,
+    });
+    expect(h.launches).toHaveLength(2);
+    expect(JSON.parse(h.launches.at(-1)!.context!.env!.OPEN_INFO).reason).toBe("refresh");
+    expect(h.launches.at(-1)!.context!.paseoTools!.getTool("plugin_echo")?.name).toBe(
+      "plugin_echo",
+    );
+  } finally {
+    await h.close();
+  }
+}, 60_000);
+
+test("starting and stopping a session-hook plugin each causes one idle reopen", async () => {
+  const h = await setup(true);
+  try {
+    const a = await h.create({ x: "y" });
+    await h.install(
+      "added-tools",
+      pluginSource.replace('name: "plugin_echo"', 'name: "added_echo"'),
+    );
+    await sendAndFinish(h, a.id, "after start");
+    expect(h.launches).toHaveLength(2);
+    expect(h.launches.at(-1)!.context!.paseoTools!.getTool("added_echo")?.name).toBe("added_echo");
+    await h.client.disablePlugin("added-tools");
+    await sendAndFinish(h, a.id, "after stop");
+    expect(h.launches).toHaveLength(3);
+    expect(h.launches.at(-1)!.context!.paseoTools!.getTool("added_echo")).toBeUndefined();
+    await sendAndFinish(h, a.id, "stable after stop");
+    expect(h.launches).toHaveLength(3);
+    expect(h.events.interrupts).toBe(0);
+  } finally {
+    await h.close();
+  }
+}, 60_000);
+
+test("plugins without a session-open hook do not make agent sessions stale", async () => {
+  const h = await setup(true);
+  try {
+    const a = await h.create({ x: "y" });
+    await h.install(
+      "no-session-hook",
+      "export default function contribute(server) { server.on('agent.created', () => {}); return () => {}; }",
+    );
+    await sendAndFinish(h, a.id, "after unrelated start");
+    expect(h.launches).toHaveLength(1);
+    await h.client.reloadPlugin("no-session-hook");
+    await sendAndFinish(h, a.id, "after unrelated reload");
+    expect(h.launches).toHaveLength(1);
+    await h.client.disablePlugin("no-session-hook");
+    await sendAndFinish(h, a.id, "after unrelated stop");
+    expect(h.launches).toHaveLength(1);
+  } finally {
+    await h.close();
+  }
+}, 60_000);
+
+test("explicit SDK reload interrupts a running turn before reopening its session", async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const h = await setup(true, reloadRpcSource, undefined, {
+    beforeTurnComplete: async () => blocked,
+    onInterrupt: () => release(),
+  });
+  try {
+    const a = await h.create({ x: "y" });
+    await h.client.sendMessage(a.id, "running before explicit reload", {
+      activeTurnBehavior: "steer",
+    });
+    await expect
+      .poll(() => h.daemon.daemon.agentManager.getAgent(a.id)!.activeTurnId)
+      .not.toBeNull();
+    expect(await h.client.invokePluginRpc("tools-test", "reload_agent", { id: a.id })).toEqual({
+      id: a.id,
+    });
+    expect(h.events.interrupts).toBe(1);
+    expect(h.launches).toHaveLength(2);
+    expect(JSON.parse(h.launches.at(-1)!.context!.env!.OPEN_INFO).reason).toBe("refresh");
+  } finally {
+    release();
     await h.close();
   }
 }, 60_000);

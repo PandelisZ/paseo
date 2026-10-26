@@ -310,6 +310,7 @@ export class PluginRuntime {
   private readonly spawnChild: () => PluginChild;
   private sessionHost: PluginPaseoSessionHost | null;
   private readonly listeners = new Set<(pluginId: string, error?: string) => void>();
+  private readonly sessionOpenListeners = new Set<() => void>();
 
   constructor(
     logger: pino.Logger,
@@ -332,6 +333,16 @@ export class PluginRuntime {
     return () => this.listeners.delete(listener);
   }
 
+  subscribeSessionOpenChanges(listener: () => void): () => void {
+    this.sessionOpenListeners.add(listener);
+    return () => this.sessionOpenListeners.delete(listener);
+  }
+
+  private notifySessionOpenChange(loaded: LoadedPlugin): void {
+    if (!loaded.hooks.before.includes("agent.session_open")) return;
+    for (const listener of this.sessionOpenListeners) listener();
+  }
+
   async startPlugin(
     pluginId: string,
     configuredPath: string,
@@ -348,6 +359,7 @@ export class PluginRuntime {
       throw new Error(`Plugin start cancelled: ${pluginId}`);
     }
     this.plugins.set(pluginId, loaded);
+    this.notifySessionOpenChange(loaded);
     this.appendLog(pluginId, "stdout", "[paseo] Plugin ready");
   }
 
@@ -371,6 +383,7 @@ export class PluginRuntime {
       clientBundle: bundles.clientBundle ?? "",
     });
     this.plugins.set(input.id, loaded);
+    this.notifySessionOpenChange(loaded);
     this.appendLog(input.id, "stdout", "[paseo] Plugin ready");
   }
 
@@ -386,6 +399,7 @@ export class PluginRuntime {
     const loaded = this.plugins.get(pluginId);
     if (!loaded) return false;
     this.plugins.delete(pluginId);
+    this.notifySessionOpenChange(loaded);
     this.rejectPending(loaded, `Plugin stopped: ${pluginId}`);
     await this.stopPlugin(loaded);
     return true;
@@ -715,6 +729,7 @@ export class PluginRuntime {
     const loaded = [...this.plugins.values()];
     this.plugins.clear();
     for (const plugin of loaded) {
+      this.notifySessionOpenChange(plugin);
       this.rejectPending(plugin, `Plugin stopped: ${plugin.id}`);
     }
     await Promise.all(loaded.map((plugin) => this.stopPlugin(plugin)));
@@ -946,7 +961,14 @@ export class PluginRuntime {
 
   private handleChildMessage(loaded: LoadedPlugin, message: PluginProcessMessage): void {
     if (message.type === "hooks.changed") {
+      const hadSessionOpen = loaded.hooks.before.includes("agent.session_open");
       loaded.hooks = message.hooks;
+      if (
+        this.plugins.get(loaded.id) === loaded &&
+        hadSessionOpen !== loaded.hooks.before.includes("agent.session_open")
+      ) {
+        for (const listener of this.sessionOpenListeners) listener();
+      }
       return;
     }
     if (message.type === "settings.changed") {
@@ -1260,6 +1282,7 @@ export class PluginRuntime {
     const wasPublished = this.plugins.get(loaded.id) === loaded;
     if (wasPublished) {
       this.plugins.delete(loaded.id);
+      this.notifySessionOpenChange(loaded);
     }
     this.rejectPending(loaded, `Plugin process exited: ${loaded.id}`);
     for (const state of loaded.providerConnections.values()) {

@@ -769,6 +769,8 @@ export class AgentManager {
   private readonly agentStreamCoalescer: AgentStreamCoalescer;
   private mcpBaseUrl: string | null;
   private readonly mcpAuthToken: string | null;
+  private sessionOpenGeneration = 0;
+  private readonly sessionOpenGenerations = new Map<string, number>();
   private readonly attachedPluginTools = new Map<string, AttachedAgentTool[]>();
   private readonly pluginAgentTools: PluginAgentToolsRuntime | undefined;
   private paseoToolsEnabled = true;
@@ -893,6 +895,30 @@ export class AgentManager {
     this.paseoToolCatalogFactory = factory;
   }
 
+  invalidatePluginSessions(): void {
+    this.sessionOpenGeneration++;
+  }
+
+  async reloadStalePluginSession(agentId: string): Promise<void> {
+    if (!this.needsPluginSessionReload(agentId)) return;
+    await this.trackAgentRegistrationOperation(
+      this.runLifecycleMutation(agentId, async () => {
+        if (!this.needsPluginSessionReload(agentId)) return;
+        await this.reloadAgentSessionInternal(agentId);
+      }),
+    );
+  }
+
+  private needsPluginSessionReload(agentId: string): boolean {
+    const agent = this.getAgent(agentId);
+    return (
+      agent !== null &&
+      agent.lifecycle !== "closed" &&
+      this.sessionOpenGenerations.get(agentId) !== this.sessionOpenGeneration &&
+      !this.hasInFlightRun(agentId)
+    );
+  }
+
   getPluginTools(agentId: string): readonly AttachedAgentTool[] {
     return (this.attachedPluginTools.get(agentId) ?? []).filter((tool) =>
       this.pluginAgentTools?.isToolPluginAvailable(tool.pluginId, tool.pluginInstanceId),
@@ -921,6 +947,7 @@ export class AgentManager {
 
   private detachPluginTools(agentId: string): void {
     this.attachedPluginTools.delete(agentId);
+    this.sessionOpenGenerations.delete(agentId);
     this.pluginAgentTools?.detachTools(agentId);
   }
 
@@ -5489,6 +5516,8 @@ export class AgentManager {
       labels?: Record<string, string>;
     },
   ): Promise<AgentLaunchContext> {
+    // A plugin changing during this open must still make the resulting session stale.
+    const generation = this.sessionOpenGeneration;
     this.detachPluginTools(agentId);
     if (this.pluginLifecycle) {
       const request = {
@@ -5535,6 +5564,7 @@ export class AgentManager {
         throw error;
       }
     }
+    this.sessionOpenGenerations.set(agentId, generation);
     return context;
   }
 

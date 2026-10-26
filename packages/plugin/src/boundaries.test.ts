@@ -246,3 +246,22 @@ describe("plugin agent tools SDK boundary", () => {
     ).toEqual([]);
   });
 });
+
+describe("agent session reload SDK boundary", () => {
+  it("exposes reload separately from snapshot refresh", () => {
+    expect(
+      typeErrors(`
+      import { type PluginServerContext } from "@getpaseo/plugin/server";
+      import { type PaseoAgentRefetchResult } from "@getpaseo/client";
+      async function reload(server: PluginServerContext, paseo: import("@getpaseo/client").PaseoApi) {
+        const agent = paseo.agents.ref("chosen-agent");
+        const read: PaseoAgentRefetchResult | null = await agent.refresh("read-snapshot");
+        const reopened: PaseoAgentRefetchResult | null = await agent.reload({ requestId: "reload-session" });
+        await agent.reload();
+        // @ts-expect-error reload options can grow without a positional signature change
+        await agent.reload("reload-session");
+      }
+    `),
+    ).toEqual([]);
+  });
+});

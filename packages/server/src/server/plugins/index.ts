@@ -38,6 +38,7 @@ import type { PluginUsageSourceMetadata } from "./plugin-process-protocol.js";
 const BUILTIN_PROVIDER_ID_SET: ReadonlySet<string> = new Set(BUILTIN_PROVIDER_IDS);
 
 interface PluginRuntimePort {
+  subscribeSessionOpenChanges?: PluginRuntime["subscribeSessionOpenChanges"];
   isToolPluginAvailable?: PluginRuntime["isToolPluginAvailable"];
   callTool?: PluginRuntime["callTool"];
   detachTools?: PluginRuntime["detachTools"];
@@ -134,6 +135,10 @@ export class PluginService {
   readonly emit: PluginLifecycle["emit"] = (name, event) => {
     this.runtime.emit?.(name, event);
   };
+
+  subscribeSessionOpenChanges(listener: () => void): () => void {
+    return this.runtime.subscribeSessionOpenChanges?.(listener) ?? (() => {});
+  }
 
   readonly isToolPluginAvailable: PluginAgentToolsRuntime["isToolPluginAvailable"] = (
     pluginId,
