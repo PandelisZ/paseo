@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { selectReferenceProjectedTimelinePage } from "./timeline-page-reference.test-support.js";
+import { selectReferenceProjectedTimelinePage } from "./test-utils/timeline-page-reference.js";
 import type { AgentTimelineItem } from "./agent-sdk-types.js";
 import { InMemoryAgentTimelineStore } from "./agent-timeline-store.js";
 

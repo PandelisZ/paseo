@@ -1,4 +1,4 @@
-import { selectProjectedTimelinePage } from "./timeline-page-reference.test-support.js";
+import { selectProjectedTimelinePage } from "./test-utils/timeline-page-reference.js";
 import { describe, expect, test } from "vitest";
 
 import type { AgentTimelineRow } from "./agent-manager.js";

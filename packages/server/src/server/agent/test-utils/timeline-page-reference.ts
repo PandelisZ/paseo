@@ -1,5 +1,5 @@
 // Frozen pre-index page selection: differential oracle for retained projection tests.
-import type { AgentTimelineRow } from "./agent-timeline-store-types.js";
+import type { AgentTimelineRow } from "../agent-timeline-store-types.js";
 import {
   TimelineProjection,
   projectTimelineRows,
@@ -7,7 +7,7 @@ import {
   type ProjectedTimelineRow,
   type TimelineLimitDirection,
   type ProjectedTimelinePageSelection,
-} from "./timeline-projection.js";
+} from "../timeline-projection.js";
 
 function makeCanonicalEntries(rows: readonly AgentTimelineRow[]): TimelineProjectionEntry[] {
   return rows.map((row) => {
