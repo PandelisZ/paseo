@@ -24,10 +24,10 @@ Use these providers with an installed, authenticated CLI. Some require the setup
 
 ### Roder
 
-Install [Roder](https://github.com/RoderAI/roder#install-roder) on your daemon host.
-This integration requires a Roder build with ACP session controls, MCP injection
-and session listing. These additions are being prepared upstream; older published
-binaries do not provide the full integration described here.
+Install [Roder 0.3.25 or newer](https://github.com/RoderAI/roder/releases/tag/roder/v0.3.25)
+on your daemon host. This version adds ACP session controls, MCP injection and
+saved-session listing. See [Roder's installation guide](https://github.com/RoderAI/roder#install-roder)
+to install or upgrade the CLI.
 For Codex OAuth, run `roder auth login codex` in a terminal on that host. Roder reads
 its own credentials; Paseo does not sign in for you.
 

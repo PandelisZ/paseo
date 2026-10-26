@@ -11,7 +11,7 @@ import {
 } from "@getpaseo/plugin/server/provider";
 import contribute from "../index.server.js";
 
-// Use a source build containing the ACP expansion; inference stays offline.
+// Use Roder 0.3.25 or newer; mock inference keeps these checks offline.
 const roderBinary = process.env.RODER_TEST_BINARY;
 
 describe.skipIf(!roderBinary)("Roder ACP plugin with the real CLI", () => {

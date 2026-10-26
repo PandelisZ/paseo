@@ -22,9 +22,9 @@ nav: 支持的 Provider
 
 ### Roder {#roder}
 
-在 daemon 主机上安装 [Roder](https://github.com/RoderAI/roder#install-roder)。
-此集成需要支持 ACP 会话控制、MCP 注入和会话列表的 Roder 构建版本。
-这些功能正在准备提交至上游；较早发布的二进制版本不具备此处描述的完整集成能力。
+在 daemon 主机上安装 [Roder 0.3.25 或更新版本](https://github.com/RoderAI/roder/releases/tag/roder/v0.3.25)。
+此版本增加了 ACP 会话控制、MCP 注入和已保存会话列表。
+安装或升级 CLI 的步骤见 [Roder 安装指南](https://github.com/RoderAI/roder#install-roder)。
 使用 Codex OAuth 时，在该主机的终端运行 `roder auth login codex`。
 Roder 读取自己的凭据；Paseo 不会代你登录。
 
