@@ -6,6 +6,7 @@ import { join, basename, dirname, isAbsolute, resolve, sep } from "path";
 import net from "node:net";
 import { createHash } from "node:crypto";
 import stripAnsi from "strip-ansi";
+import pLimit from "p-limit";
 import {
   buildStringCommandShellInvocation,
   createStringCommandShellEnv,
@@ -912,20 +913,32 @@ export function mapWorkspaceRelativeCwdToWorktree(input: {
 // Keep the former realpathSync spelling on Windows: promises.realpath uses the
 // native resolver and can return an 8.3 alias instead of the long path.
 const resolveOwnershipPath = promisify(realpath);
+const resolveNativeOwnershipPath = promisify(realpath.native);
+const ownershipIdentityIo = pLimit(2);
 
 async function normalizePathForOwnership(input: string): Promise<string> {
   try {
-    return await resolveOwnershipPath(input);
+    return await ownershipIdentityIo(() => resolveOwnershipPath(input));
   } catch {
     return resolve(input);
   }
 }
 
+async function ownershipPathVariants(input: string): Promise<string[]> {
+  const variants = new Set([input, await normalizePathForOwnership(input)]);
+  try {
+    variants.add(await ownershipIdentityIo(() => resolveNativeOwnershipPath(input)));
+  } catch {
+    // Missing descendants still match a lexical or established root spelling.
+  }
+  return [...variants];
+}
+
 // Keep lexical variants for missing paths: archive must still recognize a removed
 // worktree below a symlinked worktrees root, whose full realpath no longer exists.
 async function getOwnershipRelativePath(root: string, candidate: string): Promise<string | null> {
-  const roots = [root, await normalizePathForOwnership(root)];
-  const candidates = [candidate, await normalizePathForOwnership(candidate)];
+  const roots = await ownershipPathVariants(root);
+  const candidates = await ownershipPathVariants(candidate);
   for (const rootPath of roots) {
     for (const candidatePath of candidates) {
       const relative = getRelativePathInsideRoot(rootPath, candidatePath);
@@ -1062,7 +1075,7 @@ export async function listPaseoWorktrees({
     envOverlay: READ_ONLY_GIT_ENV,
   });
 
-  const roots = [projectWorktreesRoot, await normalizePathForOwnership(projectWorktreesRoot)];
+  const roots = await ownershipPathVariants(projectWorktreesRoot);
   const worktrees: PaseoWorktreeInfo[] = [];
   // Inspect foreign paths sequentially; a large worktree list must not consume the FS pool.
   for (const entry of parseWorktreeList(stdout)) {

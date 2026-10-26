@@ -5,6 +5,7 @@ import {
   deletePaseoWorktree,
   isPaseoOwnedWorktreeCwd,
   mapWorkspaceCwdToWorktree,
+  runWorktreeTeardownCommands,
   slugify,
   type CreateWorktreeOptions,
   type WorktreeConfig,
@@ -172,6 +173,14 @@ describe("paseo worktree manager", () => {
 
     const ownership = await isPaseoOwnedWorktreeCwd(created.worktreePath, { paseoHome });
     expect(ownership).toMatchObject({ allowed: true, worktreePath: created.worktreePath });
+    // Windows may report the same root through native 8.3 and JS long spellings.
+    const nativeWorktreePath = realpathSync.native(created.worktreePath);
+    await expect(
+      runWorktreeTeardownCommands({
+        worktreePath: created.worktreePath,
+        teardownCwd: nativeWorktreePath,
+      }),
+    ).resolves.toEqual([]);
     await expect(
       isPaseoOwnedWorktreeCwd(join(created.worktreePath, "packages", "app"), { paseoHome }),
     ).resolves.toMatchObject({
