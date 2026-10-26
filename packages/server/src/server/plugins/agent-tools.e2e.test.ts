@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -704,6 +705,48 @@ test("explicit SDK reload interrupts a running turn before reopening its session
     expect(JSON.parse(h.launches.at(-1)!.context!.env!.OPEN_INFO).reason).toBe("refresh");
   } finally {
     release();
+    await h.close();
+  }
+}, 60_000);
+
+test("the agent-tools example appends notes only for labeled agents", async () => {
+  const h = await setup();
+  try {
+    await h.client.installDirectoryPlugin(
+      fileURLToPath(new URL("../../../../../plugin-examples/agent-tools", import.meta.url)),
+    );
+    const a = await h.create({ "notes/enabled": "true" });
+    const mcpA = await h.mcp(a.id);
+    expect((await mcpA.listTools()).tools.map((tool) => tool.name)).toContain(
+      "append_workspace_note",
+    );
+    expect(
+      await mcpA.callTool({
+        name: "append_workspace_note",
+        arguments: { note: "Run the targeted tests before committing." },
+      }),
+    ).toMatchObject({
+      content: [
+        { type: "text", text: `Saved note to ${path.join(h.directory, "AGENT_NOTES.md")}` },
+      ],
+      structuredContent: { path: path.join(h.directory, "AGENT_NOTES.md") },
+    });
+    expect(await readFile(path.join(h.directory, "AGENT_NOTES.md"), "utf8")).toBe(
+      "Run the targeted tests before committing.\n",
+    );
+    await mcpA.callTool({
+      name: "append_workspace_note",
+      arguments: { note: "Keep existing notes." },
+    });
+    expect(await readFile(path.join(h.directory, "AGENT_NOTES.md"), "utf8")).toBe(
+      "Run the targeted tests before committing.\nKeep existing notes.\n",
+    );
+    await h.create();
+    const mcpB = await h.mcp();
+    expect((await mcpB.listTools()).tools.map((tool) => tool.name)).not.toContain(
+      "append_workspace_note",
+    );
+  } finally {
     await h.close();
   }
 }, 60_000);
