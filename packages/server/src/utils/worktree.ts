@@ -1058,12 +1058,12 @@ export async function listPaseoWorktrees({
     envOverlay: READ_ONLY_GIT_ENV,
   });
 
-  const root = projectWorktreesRoot;
+  const roots = [projectWorktreesRoot, await normalizePathForOwnership(projectWorktreesRoot)];
   const worktrees: PaseoWorktreeInfo[] = [];
   // Inspect foreign paths sequentially; a large worktree list must not consume the FS pool.
   for (const entry of parseWorktreeList(stdout)) {
     const path = await normalizePathForOwnership(entry.path);
-    if ((await getOwnershipRelativePath(root, path)) === null) continue;
+    if (!roots.some((root) => getRelativePathInsideRoot(root, path) !== null)) continue;
     worktrees.push({ ...entry, path, createdAt: await resolveWorktreeCreatedAtIso(path) });
   }
   return worktrees;
