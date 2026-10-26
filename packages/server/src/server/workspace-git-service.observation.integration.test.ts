@@ -530,6 +530,8 @@ test("a late Git-ignored tree is pruned while tracked changes still notify consu
 test("Git refresh, command tracing and 10,000 ignored alias events do no synchronous IO", async () => {
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
+  const { fileURLToPath } = await import("node:url");
+  const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
   const source = `
     import assert from 'node:assert/strict';
     import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
@@ -612,7 +614,7 @@ test("Git refresh, command tracing and 10,000 ignored alias events do no synchro
         source,
       ],
       {
-        cwd: process.cwd(),
+        cwd: repositoryRoot,
         env: { ...process.env, GIT_IO_TRACE: tracing ? "1" : "" },
         timeout: 30_000,
         maxBuffer: 4 * 1024 * 1024,

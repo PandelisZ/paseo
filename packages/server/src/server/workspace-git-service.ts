@@ -1301,6 +1301,11 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     }
     await this.promoteWorkingTreeWatchTarget(workingTreeTarget, facts.worktreeRoot);
     const gitDir = facts.absoluteGitDir;
+    const gitDirPaths = target.gitDirPaths?.matches(gitDir)
+      ? target.gitDirPaths
+      : await GitObservationPaths.create(gitDir);
+    if (!this.isActiveObservedWorkspaceTarget(target)) return;
+    target.gitDirPaths = gitDirPaths;
     const repoGitRoot = facts.gitCommonDir ?? (await this.resolveWorkspaceGitRefsRoot(gitDir));
     if (!this.isActiveObservedWorkspaceTarget(target)) {
       return;
@@ -1332,15 +1337,8 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
 
     const promise = this.deps
       .getCheckoutSnapshotFacts(target.cwd, context)
-      .then(async (facts) => {
-        const paths =
-          facts.isGit && facts.absoluteGitDir
-            ? await GitObservationPaths.create(facts.absoluteGitDir)
-            : null;
-        if (!target.closed) {
-          target.gitDirPaths = paths;
-          target.latestFacts = facts;
-        }
+      .then((facts) => {
+        if (!target.closed) target.latestFacts = facts;
         return facts;
       })
       .finally(() => {
