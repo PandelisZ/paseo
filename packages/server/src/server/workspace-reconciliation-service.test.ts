@@ -404,6 +404,71 @@ describe("WorkspaceReconciliationService", () => {
     }
   });
 
+  test("inspects every healthy path when one hung inspection times out during a longer scan", async () => {
+    const rootPath = realpathSync(mkdtempSync(path.join(tmpdir(), "reconcile-long-hung-")));
+    tempDirs.push(rootPath);
+    const { projects, workspaces, projectRegistry, workspaceRegistry } = createTestRegistries();
+    projects.set(
+      "p1",
+      createPersistedProjectRecord({
+        projectId: "p1",
+        rootPath,
+        projectKey: canonicalLocalProjectKey(rootPath),
+        kind: "non_git",
+        displayName: "project",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }),
+    );
+    const healthyIds = Array.from({ length: 12 }, (_, i) => `healthy${i}`);
+    for (const workspaceId of ["hung", ...healthyIds]) {
+      workspaces.set(
+        workspaceId,
+        createPersistedWorkspaceRecord({
+          workspaceId,
+          projectId: "p1",
+          cwd: path.join(rootPath, workspaceId),
+          kind: "directory",
+          displayName: workspaceId,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        }),
+      );
+    }
+    const calls: string[] = [];
+    let outstanding = 0;
+    let maximumOutstanding = 0;
+    const { logger, warnRecords } = createCapturingLogger();
+    const service = new WorkspaceReconciliationService({
+      projectRegistry,
+      workspaceRegistry,
+      logger,
+      inspectionTimeoutMs: 100,
+      inspectDirectory: async (targetPath) => {
+        calls.push(targetPath);
+        maximumOutstanding = Math.max(maximumOutstanding, ++outstanding);
+        if (path.basename(targetPath) === "hung") return new Promise(() => {});
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        outstanding--;
+        return "directory";
+      },
+    });
+    try {
+      const result = await service.runOnce();
+      expect(result.durationMs).toBeGreaterThan(100);
+      expect(calls).toEqual(
+        ["hung", ...healthyIds].map((id) => path.join(rootPath, id)).concat(rootPath),
+      );
+      expect(maximumOutstanding).toBe(2);
+      expect(outstanding).toBe(1);
+      expect(workspaces.get("hung")?.archivedAt).toBeNull();
+      expect(result.changesApplied).toEqual([]);
+      expect(warnRecords.filter((record) => record.message.includes("saturated"))).toEqual([]);
+    } finally {
+      service.dispose();
+    }
+  });
+
   test("times out a hung inspection without archiving it or blocking healthy paths, and retains its IO slot", async () => {
     const rootPath = realpathSync(mkdtempSync(path.join(tmpdir(), "reconcile-hung-")));
     tempDirs.push(rootPath);

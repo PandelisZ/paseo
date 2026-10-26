@@ -123,6 +123,7 @@ export class WorkspaceReconciliationService {
   // the deadline to admit more work into libuv's shared threadpool.
   private readonly timedOutPaths = new Set<string>();
   private inspectionSaturated = false;
+  private readonly inspectionWaiters = new Set<() => void>();
   private readonly pendingInspections = new Map<string, Promise<DirectoryState>>();
   private readonly directoryInspection: (targetPath: string) => Promise<DirectoryState>;
   private readonly inspectionTimeoutMs: number;
@@ -197,6 +198,7 @@ export class WorkspaceReconciliationService {
 
   dispose(): void {
     this.disposed = true;
+    this.wakeInspectionWaiters();
     this.unsubscribeRegistry?.();
     this.unsubscribeRegistry = null;
     if (this.rescanTimer) this.clock.clearInterval(this.rescanTimer);
@@ -246,6 +248,9 @@ export class WorkspaceReconciliationService {
     const allWorkspaces = await this.workspaceRegistry.list();
 
     const activeProjects = allProjects.filter((p) => !p.archivedAt);
+    const activeProjectsById = new Map(
+      activeProjects.map((project) => [project.projectId, project]),
+    );
     const activeWorkspaces = allWorkspaces.filter((w) => !w.archivedAt);
     const workspaceDirectoryStates = await mapBounded(activeWorkspaces, async (workspace) => ({
       workspace,
@@ -293,7 +298,7 @@ export class WorkspaceReconciliationService {
         current.projectId !== workspace.projectId ||
         !project ||
         project.archivedAt ||
-        project.rootPath !== activeProjects.find((p) => p.projectId === project.projectId)?.rootPath
+        project.rootPath !== activeProjectsById.get(project.projectId)?.rootPath
       )
         return;
       const timestamp = new Date().toISOString();
@@ -579,11 +584,25 @@ export class WorkspaceReconciliationService {
     return this.workspaceGitService.getCheckout(cwd);
   }
 
+  private wakeInspectionWaiters(): void {
+    for (const wake of this.inspectionWaiters) wake();
+    this.inspectionWaiters.clear();
+  }
+
   private async inspectDirectory(targetPath: string): Promise<DirectoryState> {
+    // A healthy in-flight inspection owns capacity temporarily. Wait for it;
+    // only unresolved operations that have all timed out justify skipping paths.
+    while (
+      !this.disposed &&
+      !this.pendingInspections.has(targetPath) &&
+      this.pendingInspections.size >= INSPECTION_CONCURRENCY
+    ) {
+      if (this.timedOutPaths.size === INSPECTION_CONCURRENCY) return "unreadable";
+      await new Promise<void>((resolve) => this.inspectionWaiters.add(resolve));
+    }
+    if (this.disposed) return "unreadable";
     let pending = this.pendingInspections.get(targetPath);
     if (!pending) {
-      if (this.pendingInspections.size >= INSPECTION_CONCURRENCY || this.disposed)
-        return "unreadable";
       pending = Promise.resolve()
         .then(() => this.directoryInspection(targetPath))
         .catch((error) => {
@@ -597,6 +616,7 @@ export class WorkspaceReconciliationService {
         .finally(() => {
           this.pendingInspections.delete(targetPath);
           this.timedOutPaths.delete(targetPath);
+          this.wakeInspectionWaiters();
           if (this.inspectionSaturated && this.timedOutPaths.size === 0) {
             this.inspectionSaturated = false;
             this.logger.info(
@@ -614,6 +634,7 @@ export class WorkspaceReconciliationService {
         new Promise<DirectoryState>((resolve) => {
           timer = setTimeout(() => {
             this.timedOutPaths.add(targetPath);
+            this.wakeInspectionWaiters();
             if (!this.inspectionSaturated && this.timedOutPaths.size === INSPECTION_CONCURRENCY) {
               this.inspectionSaturated = true;
               this.logger.warn(
