@@ -1,3 +1,4 @@
+import { BUILTIN_PROVIDER_IDS } from "@getpaseo/protocol/provider-manifest";
 import { mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,11 +9,17 @@ import { createTestPaseoDaemon } from "../../../test-utils/paseo-daemon.js";
 import { DaemonClient } from "../../../test-utils/daemon-client.js";
 import { readActiveOmpEntryChain } from "./history.js";
 
-test("replays a 300 MiB active chain without blocking the event loop", async () => {
+test("replays selected OMP history without blocking the event loop", async () => {
   const directory = await mkdtemp(join(tmpdir(), "omp-history-budget-"));
   const sessionFile = join(directory, "session.jsonl");
+  const started = performance.now();
   try {
-    const daemon = await createTestPaseoDaemon();
+    const daemon = await createTestPaseoDaemon({
+      // This regression exercises file replay and daemon requests, not executable discovery.
+      providerOverrides: Object.fromEntries(
+        BUILTIN_PROVIDER_IDS.map((id) => [id, { enabled: false }]),
+      ),
+    });
     const client = new DaemonClient({
       url: `ws://127.0.0.1:${daemon.port}/ws`,
       appVersion: "0.13.2",
@@ -22,11 +29,13 @@ test("replays a 300 MiB active chain without blocking the event loop", async () 
       await client.fetchAgents({ subscribe: {} });
       await client.getDaemonStatus();
       const file = await open(sessionFile, "w");
-      const text = "x".repeat(16 * 1024);
+      // Structured message blocks expose document-sized parsing at a modest byte size.
+      // Replay an earlier active entry so inactive payload retention cannot drive the probe.
+      const text = Array.from({ length: 64 }, () => ({ type: "text", text: "x" }));
       let bytes = 0;
       let count = 0;
       try {
-        while (bytes < 300 * 1024 * 1024) {
+        while (bytes < 28 * 1024 * 1024) {
           const line =
             JSON.stringify({
               type: "message",
@@ -51,7 +60,7 @@ test("replays a 300 MiB active chain without blocking the event loop", async () 
       try {
         const replayState = { finished: false };
         let repliesDuringReplay = 0;
-        const replay = readActiveOmpEntryChain(sessionFile).finally(() => {
+        const replay = readActiveOmpEntryChain(sessionFile, "row-0").finally(() => {
           replayState.finished = true;
         });
         // A real WebSocket RPC served by the isolated daemon on the same event loop.
@@ -64,24 +73,30 @@ test("replays a 300 MiB active chain without blocking the event loop", async () 
         })();
         const [entries] = await Promise.all([replay, requests]);
         await delay(10);
-        console.log(JSON.stringify({ bytes, count, longestGap, repliesDuringReplay }));
-        expect(repliesDuringReplay).toBeGreaterThan(0);
-        expect(entries.length).toBe(count);
-        for (let index = 0; index < entries.length; index++) {
-          expect(entries[index]).toEqual({
+        console.log(
+          JSON.stringify({
+            bytes,
+            count,
+            longestGap,
+            repliesDuringReplay,
+            generationAndLoadMs: performance.now() - started,
+          }),
+        );
+        expect(entries).toEqual([
+          {
             type: "message",
-            id: `row-${index}`,
-            parentId: index ? `row-${index - 1}` : null,
+            id: "row-0",
+            parentId: null,
             message: { role: "user", content: text },
-          });
-        }
+          },
+        ]);
         expect(longestGap).toBeLessThan(50);
+        expect(repliesDuringReplay).toBeGreaterThan(0);
       } finally {
         clearInterval(probe);
       }
     } finally {
-      await client.close();
-      await daemon.close();
+      await client.close().finally(() => daemon.close());
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
