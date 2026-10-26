@@ -7787,8 +7787,6 @@ export class Session {
   ): Promise<void> {
     const direction: AgentTimelineFetchDirection = msg.direction ?? (msg.cursor ? "after" : "tail");
     const projection = "projected" as const;
-    const requestedLimit = msg.limit;
-    const pageLimit = requestedLimit ?? (direction === "after" ? 0 : 200);
     const cursor: AgentTimelineCursor | undefined = msg.cursor
       ? {
           epoch: msg.cursor.epoch,
@@ -7807,7 +7805,7 @@ export class Session {
       const fetchedControlTimeline = this.agentManager.fetchTimeline(msg.agentId, {
         direction,
         cursor,
-        limit: pageLimit,
+        limit: msg.limit,
       });
       const selectedTimeline = {
         timeline: fetchedControlTimeline,
