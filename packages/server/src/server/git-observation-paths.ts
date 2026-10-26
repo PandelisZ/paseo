@@ -1,7 +1,8 @@
 import { realpath } from "node:fs";
+import { readlink } from "node:fs/promises";
 import { promisify } from "node:util";
 import pLimit from "p-limit";
-import { sep } from "node:path";
+import { dirname, resolve as resolvePath, sep } from "node:path";
 import { looksLikeDefiniteWindowsPath, normalizePathPreservingCase } from "../utils/path.js";
 
 const nativeRealpath = promisify(realpath.native);
@@ -29,6 +30,22 @@ export class GitObservationPaths {
         aliases.add(normalizePath(await identityIo(() => resolve(root))));
       } catch {
         /* Missing roots retain lexical identity. */
+      }
+    }
+    // A link may name /var/... while realpath returns /private/var/... on macOS.
+    // Retain literal targets too, including chains, without following links in callbacks.
+    let current = root;
+    const visited = new Set<string>();
+    for (let remaining = 40; remaining > 0; remaining--) {
+      const alias = normalizePath(current);
+      if (visited.has(alias)) break;
+      visited.add(alias);
+      aliases.add(alias);
+      try {
+        const target = await identityIo(() => readlink(current));
+        current = resolvePath(dirname(current), target);
+      } catch {
+        break;
       }
     }
     return new GitObservationPaths(root, [...aliases], windows);

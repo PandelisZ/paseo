@@ -671,3 +671,27 @@ test("concurrent alias requests establish one working-tree subscription", async 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Git event identity retains a symlink's literal target before canonicalizing its parent", async () => {
+  const { mkdir, symlink } = await import("node:fs/promises");
+  const { GitObservationPaths } = await import("./git-observation-paths.js");
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "git-observation-literal-target-")));
+  const repository = path.join(root, "repository");
+  const parentAlias = path.join(root, "parent-alias");
+  const workspaceAlias = path.join(root, "workspace-alias");
+  const literalTarget = path.join(parentAlias, "repository");
+  const linkType = process.platform === "win32" ? "junction" : "dir";
+  try {
+    await mkdir(repository);
+    await symlink(root, parentAlias, linkType);
+    await symlink(literalTarget, workspaceAlias, linkType);
+    const paths = await GitObservationPaths.create(workspaceAlias);
+    const accept = paths.createEventFilter([path.join(workspaceAlias, "ignored")]);
+    for (const spelling of [workspaceAlias, literalTarget, repository]) {
+      expect(paths.relative(path.join(spelling, "deleted.txt"))).toBe("deleted.txt");
+      expect(accept(path.join(spelling, "ignored", "deleted.txt"))).toBe(false);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
