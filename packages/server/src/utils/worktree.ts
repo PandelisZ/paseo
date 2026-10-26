@@ -1,7 +1,7 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { constants as fsConstants } from "fs";
-import { copyFile, mkdir, realpath, rm, stat } from "fs/promises";
+import { constants as fsConstants, realpath } from "fs";
+import { copyFile, mkdir, rm, stat } from "fs/promises";
 import { join, basename, dirname, isAbsolute, resolve, sep } from "path";
 import net from "node:net";
 import { createHash } from "node:crypto";
@@ -909,9 +909,13 @@ export function mapWorkspaceRelativeCwdToWorktree(input: {
   return mappedCwd;
 }
 
+// Keep the former realpathSync spelling on Windows: promises.realpath uses the
+// native resolver and can return an 8.3 alias instead of the long path.
+const resolveOwnershipPath = promisify(realpath);
+
 async function normalizePathForOwnership(input: string): Promise<string> {
   try {
-    return await realpath(input);
+    return await resolveOwnershipPath(input);
   } catch {
     return resolve(input);
   }

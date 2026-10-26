@@ -171,7 +171,7 @@ describe("paseo worktree manager", () => {
     expect(existsSync(created.worktreePath)).toBe(true);
 
     const ownership = await isPaseoOwnedWorktreeCwd(created.worktreePath, { paseoHome });
-    expect(ownership.allowed).toBe(true);
+    expect(ownership).toMatchObject({ allowed: true, worktreePath: created.worktreePath });
     await expect(
       isPaseoOwnedWorktreeCwd(join(created.worktreePath, "packages", "app"), { paseoHome }),
     ).resolves.toMatchObject({
