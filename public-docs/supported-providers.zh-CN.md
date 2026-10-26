@@ -23,6 +23,8 @@ nav: 支持的 Provider
 ### Roder {#roder}
 
 在 daemon 主机上安装 [Roder](https://github.com/RoderAI/roder#install-roder)。
+此集成需要支持 ACP 会话控制、MCP 注入和会话列表的 Roder 构建版本。
+这些功能正在准备提交至上游；较早发布的二进制版本不具备此处描述的完整集成能力。
 使用 Codex OAuth 时，在该主机的终端运行 `roder auth login codex`。
 Roder 读取自己的凭据；Paseo 不会代你登录。
 
@@ -35,8 +37,7 @@ Roder 读取自己的凭据；Paseo 不会代你登录。
       "roder": {
         "enabled": true,
         "command": ["roder", "acp"],
-        "env": { "RODER_PROVIDER": "codex", "RODER_MODEL": "gpt-6-sol" },
-        "paseoTools": { "enabled": false }
+        "env": { "RODER_PROVIDER": "codex", "RODER_MODEL": "gpt-6-sol" }
       }
     }
   }
@@ -45,17 +46,21 @@ Roder 读取自己的凭据；Paseo 不会代你登录。
 
 运行 `paseo reload`，然后在新建 Agent 时选择 **Roder**。
 如果 `roder` 不在 daemon 的 PATH 中，将 `command` 的第一项改为绝对路径，
-并保留第二项 `acp`。可以通过 Roder 配置或这些环境变量选择其他 Provider 和模型。
+并保留第二项 `acp`。配置和环境变量决定初始模型；
+会话中的模型和模式选择器使用 Roder 提供的选项。
 
-保持 `paseoTools.enabled` 为 `false`，并将 Agent 的 MCP 服务器列表留空。
-Roder 的 ACP 端点会拒绝注入的 MCP 服务器。Roder 会话无法使用 Paseo 工具，
-包括 Agent 编排和语音工具。
+Roder 支持注入 stdio 和 HTTP MCP 服务器，因此可以保持 Paseo 工具启用。
+Default 和 Accept edits 模式会为 MCP 调用请求权限；Plan 模式拒绝这些调用；
+Full access 模式无需权限请求即可执行。不支持 SSE MCP。
 
-Roder 的 ACP 目前支持文本提示、流式响应、工具活动、取消和权限请求。
-该端点不提供模型或模式选择器、图片提示、已保存会话列表或会话恢复。
-请在开始会话前设置模型。Provider 进程关闭后，需要新建会话；
-Paseo 无法恢复该 Roder 对话。Roder 的 ACP 端点不会应用 Paseo 的系统提示元数据；
-请将 Agent 指令写在工作区的 `AGENTS.md` 中。
+适配器支持文本和图片提示、流式响应、工具活动、取消、已保存会话列表，
+以及进程重启后的对话恢复。图片需要使用支持图片输入的模型。
+恢复时需保留 Roder 数据目录和会话工作目录，并重新提供具有相同工具定义的 MCP 服务器。
+
+Paseo 的系统提示会保存为线程开发者指令，与工作区 `AGENTS.md` 一同生效。
+重新打开会话时会保留原提示；如需更改，请新建会话。
+Roder 不会应用其他 Paseo 元数据，包括持久化偏好和 Provider 选项。
+Paseo 仅显示运行中的二进制版本所声明的能力。
 
 ### Antigravity {#antigravity}
 

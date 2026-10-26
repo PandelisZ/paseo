@@ -25,6 +25,9 @@ Use these providers with an installed, authenticated CLI. Some require the setup
 ### Roder
 
 Install [Roder](https://github.com/RoderAI/roder#install-roder) on your daemon host.
+This integration requires a Roder build with ACP session controls, MCP injection
+and session listing. These additions are being prepared upstream; older published
+binaries do not provide the full integration described here.
 For Codex OAuth, run `roder auth login codex` in a terminal on that host. Roder reads
 its own credentials; Paseo does not sign in for you.
 
@@ -37,8 +40,7 @@ Enable the bundled provider in `~/.paseo/config.json`:
       "roder": {
         "enabled": true,
         "command": ["roder", "acp"],
-        "env": { "RODER_PROVIDER": "codex", "RODER_MODEL": "gpt-6-sol" },
-        "paseoTools": { "enabled": false }
+        "env": { "RODER_PROVIDER": "codex", "RODER_MODEL": "gpt-6-sol" }
       }
     }
   }
@@ -47,19 +49,24 @@ Enable the bundled provider in `~/.paseo/config.json`:
 
 Run `paseo reload`, then choose **Roder** when starting an agent. If `roder` is
 outside the daemon's PATH, use its absolute path in `command` and keep `acp` as
-the second argument. You can select another provider and model through Roder's
-configuration or these environment overrides.
+the second argument. Configuration and environment overrides set the initial model;
+the session's model and mode selectors use the values advertised by Roder.
 
-Keep `paseoTools.enabled` set to `false` and leave the agent's MCP server list empty.
-Roder's ACP endpoint rejects injected MCP servers. Paseo's tools, including agent
-orchestration and voice tools, are unavailable in Roder sessions.
+Roder accepts injected stdio and HTTP MCP servers, so Paseo tools can stay enabled.
+MCP calls ask for permission in Default and Accept edits modes. Plan mode denies
+them; Full access runs them without a permission request. SSE MCP is unsupported.
 
-Roder currently exposes text prompts, streamed responses, tool activity, cancellation,
-and permission requests over ACP. Its ACP endpoint does not expose model or mode
-selectors, image prompts, saved-session listing, or session restoration. Set the model
-before starting a session. After the provider process closes, start a new session;
-Paseo cannot resume the Roder conversation. Paseo system-prompt metadata is not applied
-by Roder's ACP endpoint; put agent instructions in the workspace's `AGENTS.md`.
+The adapter supports text and image prompts, streamed responses, tool activity,
+cancellation, saved-session listing and conversation restoration after process
+restart. Images require a model that supports them. Keep Roder's data directory
+and the session's working directory available for restoration, and resupply MCP
+servers with the same tool definitions.
+
+Paseo's system prompt becomes persistent thread developer instructions, alongside
+workspace `AGENTS.md`. Reopening preserves the original prompt; changing it requires
+a new session. Other Paseo metadata, including persistence preferences and provider
+options, is not applied by Roder. Only capabilities advertised by the running
+binary appear in Paseo.
 
 ### Antigravity
 
